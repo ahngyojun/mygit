@@ -385,7 +385,36 @@ def main():
     # === GitHub autosave ===
     if GIT_AUTOSAVE:
         commit_msg = f"update selected ({MODE})"
-        git_autosave(REPO_DIR, commit_msg)
+        import subprocess, os
+
+        os.chdir(REPO_DIR)
+        ensure_gitignore_full(REPO_DIR)
+
+        include_targets = ["selected.txt", "condition.py"]
+        exclude_patterns = [
+            "*.bak", "*.json", "selected_debug.json",
+            "__pycache__/", "*.pyc", ".idea/", ".vscode/"
+        ]
+
+        # .gitignore 자동 갱신
+        gitignore_path = REPO_DIR / ".gitignore"
+        existing = gitignore_path.read_text(encoding="utf-8").splitlines() if gitignore_path.exists() else []
+        new_lines = [p for p in exclude_patterns if p not in existing]
+        if new_lines:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(new_lines) + "\n")
+            print(f"[GIT] .gitignore 업데이트 완료 → {gitignore_path}")
+
+        # 커밋 대상만 add
+        for fname in include_targets:
+            path = REPO_DIR / fname
+            if path.exists():
+                subprocess.run(["git", "add", str(path)], check=False)
+
+        # 커밋 + 푸시
+        subprocess.run(["git", "commit", "-m", commit_msg], check=False)
+        subprocess.run(["git", "push", "origin", "main"], check=False)
+        print(f"[GIT] push 완료 → origin/main (files: {include_targets})")
 
     # =========================
     # Git ignore 자동생성 (.bak / 대용량 JSON 제외)
