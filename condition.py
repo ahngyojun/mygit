@@ -390,42 +390,33 @@ def main():
     # =========================
     # Git ignore 자동생성 (.bak / 대용량 JSON 제외)
     # =========================
-    def ensure_gitignore(repo_dir: Path):
-        """
-        .gitignore가 없으면 생성하고,
-        .bak / _bak.json / _backup.json / *.json.bak 패턴을 추가함
-        """
-        gitignore_path = repo_dir / ".gitignore"
-        patterns = [
-            "*.bak",
-            "*_bak.json",
-            "*_backup.json",
-            "*.json.bak",
-            "all_stock_data_*.json.bak",
-        ]
+def ensure_gitignore_full(repo_dir: Path):
+    """
+    .gitignore에 백업/데이터/시스템 파일 제외 패턴 추가 (자동)
+    """
+    gitignore_path = repo_dir / ".gitignore"
+    patterns = [
+        "*.bak", "*_bak.json", "*_backup.json", "*.json.bak",
+         "all_stock_data_*.json.bak", "all_stock_data.json",
+        "selected_debug.json", "__pycache__/", "*.pyc", ".idea/", ".vscode/", ".DS_Store"
+    ]
 
-        lines_to_add = []
-        if gitignore_path.exists():
-            with open(gitignore_path, "r", encoding="utf-8") as f:
-                existing = f.read().splitlines()
-            for p in patterns:
-                if p not in existing:
-                    lines_to_add.append(p)
-        else:
-            lines_to_add = patterns
+    existing = []
+    if gitignore_path.exists():
+        existing = gitignore_path.read_text(encoding="utf-8").splitlines()
 
-        if lines_to_add:
-            with open(gitignore_path, "a", encoding="utf-8") as f:
-                for p in lines_to_add:
-                    f.write(f"{p}\n")
-            print(f"[GIT] .gitignore 갱신됨 → {gitignore_path}")
-        else:
-            print("[GIT] .gitignore 이미 최신 상태")
+    new_lines = [p for p in patterns if p not in existing]
+    if new_lines:
+        with open(gitignore_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+        print(f"[GIT] .gitignore 업데이트 완료 → {gitignore_path}")
+    else:
+        print("[GIT] .gitignore 이미 최신 상태입니다.")
 
-    # === 실행 시 .gitignore 자동점검 ===
-    ensure_gitignore(REPO_DIR)
-
-
+# =========================
+# 메인 실행부
+# =========================
 if __name__ == "__main__":
+    ensure_gitignore_full(REPO_DIR)  # ✅ 실행 시 자동 반영
     main()
 

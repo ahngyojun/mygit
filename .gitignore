@@ -1,0 +1,12 @@
+*.bak
+*_bak.json
+*_backup.json
+*.json.bak
+all_stock_data_*.json.bak
+all_stock_data.json
+selected_debug.json
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.DS_Store
