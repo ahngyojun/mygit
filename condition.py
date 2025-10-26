@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import numpy as np
 import pandas as pd
+import subprocess
+import os
 
 # =========================
 # 경로/입출력
@@ -20,8 +22,6 @@ INPUT_JSON = REPO_DIR / "all_stock_data.json"
 OUTPUT_TXT = REPO_DIR / "selected.txt"
 
 # --- Git autosave settings ---
-import subprocess
-
 GIT_AUTOSAVE = True          # 자동 저장 켜기/끄기
 GIT_REMOTE = "origin"        # 원격 이름
 GIT_BRANCH = "main"          # 푸시할 브랜치
@@ -32,10 +32,7 @@ def git_autosave(repo_dir: Path, msg: str) -> None:
     변경 사항이 없으면 조용히 패스.
     """
     try:
-        # 안전: 작업 경로 보장
         cwd = str(repo_dir)
-
-        # 변경 여부 확인
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=cwd, capture_output=True, text=True, check=True
@@ -45,7 +42,6 @@ def git_autosave(repo_dir: Path, msg: str) -> None:
             print("[GIT] 변경 사항 없음 → 스킵")
             return
 
-        # add / commit / push
         subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
         subprocess.run(["git", "commit", "-m", msg], cwd=cwd, check=True)
         subprocess.run(["git", "push", GIT_REMOTE, GIT_BRANCH], cwd=cwd, check=True)
@@ -105,7 +101,7 @@ SHORT_UPPER_WICK_RATIO = 0.25
 ANCHOR_OVERLAP_RATIO = 0.50
 
 EXCLUDE_KEYWORDS = [
-    "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우",  # ← 콤마 누락 버그 수정
+    "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우",   # ← 콤마 누락 버그 수정
     "우선주", "우B", "우C", "인버스", "레버리지", "선물", "풋", "콜",
     "TRUST", "PLUS", "RISE", "KODEX", "TIGER", "KOSEF", "HANARO", "미국",
     "ACE", "액티브", "KIWOOM", "SOL", "채권"
@@ -127,21 +123,43 @@ def is_excluded_name(name: str) -> bool:
     up = (name or "").upper()
     return any(k.upper() in up for k in EXCLUDE_KEYWORDS)
 
-
 def rolling_ma(s: pd.Series, w: int) -> pd.Series:
     return s.rolling(w, min_periods=w).mean()
-
 
 def volume_ma(s: pd.Series, w: int = 20) -> pd.Series:
     return s.rolling(w, min_periods=1).mean()
 
+def _to_number(x):
+    """문자 숫자('1,234', '5.6e7', '123억', '12,345원')도 안전 변환"""
+    if x is None:
+        return np.nan
+    if isinstance(x, (int, float, np.number)):
+        return float(x)
+    try:
+        s = str(x).strip()
+        s = s.replace(",", "").replace("원", "").replace("KRW", "")
+        if s.endswith("억"):
+            base = s[:-1].strip()
+            return float(base) * 1e8
+        return float(s)
+    except Exception:
+        return np.nan
 
 def to_df(ohlcv_list: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(ohlcv_list)
     if "date" in df.columns:
         df = df.sort_values("date")
-    return df.reset_index(drop=True)
-
+    df = df.reset_index(drop=True)
+    # 숫자 컬럼 안전 변환
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = df[col].apply(_to_number)
+    # NA 처리
+    if {"open","high","low","close"}.issubset(df.columns):
+        df[["open","high","low","close"]] = df[["open","high","low","close"]].fillna(method="ffill").fillna(method="bfill")
+    if "volume" in df.columns:
+        df["volume"] = df["volume"].fillna(0).astype(float)
+    return df
 
 def local_minima_idx(s: pd.Series, start: int, end: int) -> List[int]:
     idxs = []
@@ -151,32 +169,6 @@ def local_minima_idx(s: pd.Series, start: int, end: int) -> List[int]:
         if s.iloc[i] <= s.iloc[i - 1] and s.iloc[i] <= s.iloc[i + 1]:
             idxs.append(i)
     return idxs
-
-
-# =========================
-# (보강) 단위/휴일 보정 유틸
-# =========================
-def _normalize_to_won(value: Any, *, guess_unit: str = "auto") -> float:
-    """값이 억 단위로 저장된 경우 원 단위로 환산.
-    - guess_unit="auto": 값 규모로 추정 (1e9 미만이면 억 단위로 간주)
-    - guess_unit="eok": 무조건 억 단위로 간주해 1e8 곱함
-    - guess_unit="won": 원 단위로 그대로 사용
-    """
-    if value is None:
-        return 0.0
-    try:
-        v = float(value)
-    except Exception:
-        return 0.0
-    if guess_unit == "won":
-        return v
-    if guess_unit == "eok":
-        return v * 1e8
-    # auto 휴리스틱
-    if v < 1e9:
-        return v * 1e8
-    return v
-
 
 def _last_trading_idx(df: pd.DataFrame) -> int:
     """최근 1~7봉 내에서 거래량>0인 마지막 실제 거래 봉 인덱스를 반환. 없으면 -1(마지막)."""
@@ -190,6 +182,30 @@ def _last_trading_idx(df: pd.DataFrame) -> int:
                 continue
     return -1
 
+def _normalize_to_won(value: Any, *, guess_unit: str = "auto") -> float:
+    """값이 억 단위로 저장된 경우 원 단위로 환산. 문자열(콤마/단위 포함)도 안전 파싱."""
+    if value is None:
+        return 0.0
+    # 사전 정규화
+    if not isinstance(value, (int, float, np.number)):
+        try:
+            s = str(value).strip().replace(",", "").replace("원", "").replace("KRW", "")
+            if s.endswith("억"):
+                base = s[:-1].strip()
+                value = float(base) * 1e8
+            else:
+                value = float(s)
+        except Exception:
+            return 0.0
+    v = float(value)
+    if guess_unit == "won":
+        return v
+    if guess_unit == "eok":
+        return v * 1e8
+    # auto 휴리스틱: 너무 작으면 억 단위로 간주
+    if v < 1e9:
+        return v * 1e8
+    return v
 
 # =========================
 # 절대 필터 (MODE 프리셋)
@@ -199,19 +215,15 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame) -> bool:
     idx = _last_trading_idx(df)
 
     # 1) 가격
-    try:
-        last_close = float(df["close"].iloc[idx])
-    except Exception:
-        last_close = 0.0
+    last_close = float(df["close"].iloc[idx]) if len(df) else 0.0
     if last_close < P["PRICE_MIN"]:
         return False
 
     # 2) 시총 (원 단위 정규화)
     market_cap_raw = info.get("market_cap", None)
     if market_cap_raw is None and "shares_outstanding" in info:
-        # 백업 계산: 주가 * 상장주식수
         try:
-            shares = float(info.get("shares_outstanding", 0))
+            shares = _normalize_to_won(info.get("shares_outstanding"), guess_unit="won")
             market_cap_raw = last_close * shares
         except Exception:
             market_cap_raw = None
@@ -219,12 +231,8 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame) -> bool:
     if market_cap_won < P["MCAP_MIN_WON"]:
         return False
 
-    # 3) 거래량/거래대금
-    try:
-        vol0 = int(df["volume"].iloc[idx])
-    except Exception:
-        vol0 = 0
-
+    # 3) 거래량/거래대금 (문자 케이스 포함 보정)
+    vol0 = float(df["volume"].iloc[idx]) if len(df) else 0.0
     vol_money_raw = info.get("vol_money")
     if vol_money_raw is None:
         vol_money_won = last_close * max(vol0, 0)
@@ -235,16 +243,15 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame) -> bool:
     val_ok = (vol_money_won >= P["VALUE_MIN_0_WON"])
 
     if MODE == "LIGHT":
-        # 라이트: 거래량 OR 거래대금 중 하나만 충족해도 통과 (0건 방지 완화)
+        # 라이트: OR (둘 중 하나만 통과)
         if not (vol_ok or val_ok):
             return False
     else:
-        # 노멀/스트릭트: 둘 다 충족 요구
+        # 노멀/스트릭트: AND (둘 다 필요)
         if not (vol_ok and val_ok):
             return False
 
     return True
-
 
 # =========================
 # 20MA 상승변곡 (필수)
@@ -271,7 +278,6 @@ def cond_20ma_inflect_up_required(df: pd.DataFrame) -> bool:
         return False
 
     return True
-
 
 # =========================
 # 3MA: (전제) 상승변곡 발생  AND
@@ -380,10 +386,9 @@ def cond_3ma_turning_point_capture(
 
     # ---------- (A) 변곡 그 봉에서 안착 OR (B) 변곡 후 상승구간 내 안착 ----------
     anchor_idx = None
-    # 검사 범위: 변곡봉 ~ 변곡봉 + max_anchor_delay
     scan_end = min(end, turn_idx + max_anchor_delay)
     for i in range(turn_idx, scan_end + 1):
-        # "상승구간" 필터: 해당 봉의 기울기가 양(+)이어야
+        # "상승구간" 필터: 해당 봉의 기울기가 양(+)
         if d.iloc[i] <= 0 + slope_eps:
             continue
         if _anchor_ok_at(i):
@@ -414,33 +419,44 @@ def main():
     total = len(raw)
     selected: List[Tuple[str, str]] = []
 
+    # 디버그 카운터
+    c_total = c_excluded = c_short = c_schema = 0
+    c_abs_fail = c_20_fail = c_3_fail = 0
+
     for idx, (code, info) in enumerate(raw.items(), 1):
         name = info.get("name", "")
+        c_total += 1
 
         # 🔥 ETF/리츠/스팩/우선주 등 제외
         if is_excluded_name(name):
+            c_excluded += 1
             continue
 
         ohlcv = info.get("ohlcv", [])
         if not ohlcv or len(ohlcv) < 60:
+            c_short += 1
             continue
 
         df = to_df(ohlcv)
         if not {"open", "high", "low", "close", "volume"}.issubset(df.columns):
+            c_schema += 1
             continue
 
         print(f"\r[검색중] {idx}/{total}  ({name})", end="")
 
         # ✅ 절대 필터: (단위/휴일 보정 + LIGHT OR 로직)
         if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df):
+            c_abs_fail += 1
             continue
 
         ok20 = cond_20ma_inflect_up_required(df)
         if not ok20:
+            c_20_fail += 1
             continue
 
         ok3 = cond_3ma_turning_point_capture(df)
         if not ok3:
+            c_3_fail += 1
             continue
 
         selected.append((code, name))
@@ -451,12 +467,13 @@ def main():
             f.write(f"{code}\t{name}\n")
 
     print(f"\n[DONE:{MODE}] 종목 수: {len(selected)} → {OUTPUT_TXT}")
+    # 단계별 통계
+    print(f"[STATS] total={c_total} excluded={c_excluded} short_df={c_short} schema_miss={c_schema}")
+    print(f"[STATS] abs_fail={c_abs_fail} 20ma_fail={c_20_fail} 3ma_fail={c_3_fail}")
 
     # === GitHub autosave ===
     if GIT_AUTOSAVE:
         commit_msg = f"update selected ({MODE})"
-        import subprocess, os
-
         os.chdir(REPO_DIR)
         ensure_gitignore_full(REPO_DIR)
 
@@ -486,10 +503,9 @@ def main():
         subprocess.run(["git", "push", "origin", "main"], check=False)
         print(f"[GIT] push 완료 → origin/main (files: {include_targets})")
 
-    # =========================
-    # Git ignore 자동생성 (.bak / 대용량 JSON 제외)
-    # =========================
-
+# =========================
+# Git ignore 자동생성 (.bak / 대용량 JSON 제외)
+# =========================
 def ensure_gitignore_full(repo_dir: Path):
     """
     .gitignore에 백업/데이터/시스템 파일 제외 패턴 추가 (자동)
@@ -497,7 +513,7 @@ def ensure_gitignore_full(repo_dir: Path):
     gitignore_path = repo_dir / ".gitignore"
     patterns = [
         "*.bak", "*_bak.json", "*_backup.json", "*.json.bak",
-        " all_stock_data_*.json.bak", "all_stock_data.json",
+        "all_stock_data_*.json.bak", "all_stock_data.json",
         "selected_debug.json", "__pycache__/", "*.pyc", ".idea/", ".vscode/", ".DS_Store"
     ]
 
