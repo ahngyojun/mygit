@@ -60,7 +60,7 @@ def git_autosave(repo_dir: Path, msg: str) -> None:
 # 절대 필터 프리셋 (시총/주가/거래대금)
 # =========================
 MODE = "LIGHT"  # 선택: "LIGHT" / "NORMAL" / "STRICT"
-USE_ABSOLUTE_FILTER = True  # True면 필터 적용, False면 해제
+USE_ABSOLUTE_FILTER = False  # True면 필터 적용, False면 해제
 
 PRESETS = {
     "LIGHT": {   # 완화형
@@ -105,10 +105,10 @@ SHORT_UPPER_WICK_RATIO = 0.25
 ANCHOR_OVERLAP_RATIO = 0.50
 
 EXCLUDE_KEYWORDS = [
-    "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우"
+    "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우",  # ← 콤마 누락 버그 수정
     "우선주", "우B", "우C", "인버스", "레버리지", "선물", "풋", "콜",
     "TRUST", "PLUS", "RISE", "KODEX", "TIGER", "KOSEF", "HANARO", "미국",
-    "ACE", "액티브", "KIWOOM", "SOL" , "채권"
+    "ACE", "액티브", "KIWOOM", "SOL", "채권"
 ]
 
 def is_excluded_name(name: str) -> bool:
@@ -127,17 +127,21 @@ def is_excluded_name(name: str) -> bool:
     up = (name or "").upper()
     return any(k.upper() in up for k in EXCLUDE_KEYWORDS)
 
+
 def rolling_ma(s: pd.Series, w: int) -> pd.Series:
     return s.rolling(w, min_periods=w).mean()
 
+
 def volume_ma(s: pd.Series, w: int = 20) -> pd.Series:
     return s.rolling(w, min_periods=1).mean()
+
 
 def to_df(ohlcv_list: List[Dict[str, Any]]) -> pd.DataFrame:
     df = pd.DataFrame(ohlcv_list)
     if "date" in df.columns:
         df = df.sort_values("date")
     return df.reset_index(drop=True)
+
 
 def local_minima_idx(s: pd.Series, start: int, end: int) -> List[int]:
     idxs = []
@@ -148,34 +152,99 @@ def local_minima_idx(s: pd.Series, start: int, end: int) -> List[int]:
             idxs.append(i)
     return idxs
 
+
+# =========================
+# (보강) 단위/휴일 보정 유틸
+# =========================
+def _normalize_to_won(value: Any, *, guess_unit: str = "auto") -> float:
+    """값이 억 단위로 저장된 경우 원 단위로 환산.
+    - guess_unit="auto": 값 규모로 추정 (1e9 미만이면 억 단위로 간주)
+    - guess_unit="eok": 무조건 억 단위로 간주해 1e8 곱함
+    - guess_unit="won": 원 단위로 그대로 사용
+    """
+    if value is None:
+        return 0.0
+    try:
+        v = float(value)
+    except Exception:
+        return 0.0
+    if guess_unit == "won":
+        return v
+    if guess_unit == "eok":
+        return v * 1e8
+    # auto 휴리스틱
+    if v < 1e9:
+        return v * 1e8
+    return v
+
+
+def _last_trading_idx(df: pd.DataFrame) -> int:
+    """최근 1~7봉 내에서 거래량>0인 마지막 실제 거래 봉 인덱스를 반환. 없으면 -1(마지막)."""
+    if "volume" in df.columns and len(df) > 0:
+        vols = df["volume"]
+        for i in range(1, min(7, len(vols)) + 1):
+            try:
+                if vols.iloc[-i] and vols.iloc[-i] > 0:
+                    return -i
+            except Exception:
+                continue
+    return -1
+
+
 # =========================
 # 절대 필터 (MODE 프리셋)
 # =========================
 def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame) -> bool:
-    last_close = float(df["close"].iloc[-1])
-    last_vol = int(df["volume"].iloc[-1])
-    last_value = last_close * last_vol
+    # 0) 마지막 실제 거래봉 기준으로 계산 (휴일/0거래 보정)
+    idx = _last_trading_idx(df)
 
+    # 1) 가격
+    try:
+        last_close = float(df["close"].iloc[idx])
+    except Exception:
+        last_close = 0.0
     if last_close < P["PRICE_MIN"]:
         return False
 
-    market_cap = info.get("market_cap", None)
-    if market_cap is None and "shares_outstanding" in info:
+    # 2) 시총 (원 단위 정규화)
+    market_cap_raw = info.get("market_cap", None)
+    if market_cap_raw is None and "shares_outstanding" in info:
+        # 백업 계산: 주가 * 상장주식수
         try:
             shares = float(info.get("shares_outstanding", 0))
-            market_cap = int(last_close * shares)
+            market_cap_raw = last_close * shares
         except Exception:
-            market_cap = None
-    if (market_cap is None) or (market_cap < P["MCAP_MIN_WON"]):
+            market_cap_raw = None
+    market_cap_won = _normalize_to_won(market_cap_raw, guess_unit="auto") if market_cap_raw is not None else 0.0
+    if market_cap_won < P["MCAP_MIN_WON"]:
         return False
 
-    if last_vol < P["VOL_MIN_0"]:
-        return False
+    # 3) 거래량/거래대금
+    try:
+        vol0 = int(df["volume"].iloc[idx])
+    except Exception:
+        vol0 = 0
 
-    if last_value < P["VALUE_MIN_0_WON"]:
-        return False
+    vol_money_raw = info.get("vol_money")
+    if vol_money_raw is None:
+        vol_money_won = last_close * max(vol0, 0)
+    else:
+        vol_money_won = _normalize_to_won(vol_money_raw, guess_unit="auto")
+
+    vol_ok = (vol0 >= P["VOL_MIN_0"])
+    val_ok = (vol_money_won >= P["VALUE_MIN_0_WON"])
+
+    if MODE == "LIGHT":
+        # 라이트: 거래량 OR 거래대금 중 하나만 충족해도 통과 (0건 방지 완화)
+        if not (vol_ok or val_ok):
+            return False
+    else:
+        # 노멀/스트릭트: 둘 다 충족 요구
+        if not (vol_ok and val_ok):
+            return False
 
     return True
+
 
 # =========================
 # 20MA 상승변곡 (필수)
@@ -202,6 +271,7 @@ def cond_20ma_inflect_up_required(df: pd.DataFrame) -> bool:
         return False
 
     return True
+
 
 # =========================
 # 3MA: (전제) 상승변곡 발생  AND
@@ -330,7 +400,6 @@ def cond_3ma_turning_point_capture(
     return True
 
 
-
 # =========================
 # 메인
 # =========================
@@ -362,6 +431,7 @@ def main():
 
         print(f"\r[검색중] {idx}/{total}  ({name})", end="")
 
+        # ✅ 절대 필터: (단위/휴일 보정 + LIGHT OR 로직)
         if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df):
             continue
 
@@ -419,6 +489,7 @@ def main():
     # =========================
     # Git ignore 자동생성 (.bak / 대용량 JSON 제외)
     # =========================
+
 def ensure_gitignore_full(repo_dir: Path):
     """
     .gitignore에 백업/데이터/시스템 파일 제외 패턴 추가 (자동)
@@ -426,7 +497,7 @@ def ensure_gitignore_full(repo_dir: Path):
     gitignore_path = repo_dir / ".gitignore"
     patterns = [
         "*.bak", "*_bak.json", "*_backup.json", "*.json.bak",
-         "all_stock_data_*.json.bak", "all_stock_data.json",
+        " all_stock_data_*.json.bak", "all_stock_data.json",
         "selected_debug.json", "__pycache__/", "*.pyc", ".idea/", ".vscode/", ".DS_Store"
     ]
 
@@ -448,4 +519,3 @@ def ensure_gitignore_full(repo_dir: Path):
 if __name__ == "__main__":
     ensure_gitignore_full(REPO_DIR)  # ✅ 실행 시 자동 반영
     main()
-
