@@ -387,6 +387,45 @@ def main():
         commit_msg = f"update selected ({MODE})"
         git_autosave(REPO_DIR, commit_msg)
 
+    # =========================
+    # Git ignore 자동생성 (.bak / 대용량 JSON 제외)
+    # =========================
+    def ensure_gitignore(repo_dir: Path):
+        """
+        .gitignore가 없으면 생성하고,
+        .bak / _bak.json / _backup.json / *.json.bak 패턴을 추가함
+        """
+        gitignore_path = repo_dir / ".gitignore"
+        patterns = [
+            "*.bak",
+            "*_bak.json",
+            "*_backup.json",
+            "*.json.bak",
+            "all_stock_data_*.json.bak",
+        ]
+
+        lines_to_add = []
+        if gitignore_path.exists():
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                existing = f.read().splitlines()
+            for p in patterns:
+                if p not in existing:
+                    lines_to_add.append(p)
+        else:
+            lines_to_add = patterns
+
+        if lines_to_add:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                for p in lines_to_add:
+                    f.write(f"{p}\n")
+            print(f"[GIT] .gitignore 갱신됨 → {gitignore_path}")
+        else:
+            print("[GIT] .gitignore 이미 최신 상태")
+
+    # === 실행 시 .gitignore 자동점검 ===
+    ensure_gitignore(REPO_DIR)
+
+
 if __name__ == "__main__":
     main()
 
