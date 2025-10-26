@@ -65,7 +65,7 @@ USE_ABSOLUTE_FILTER = False  # True면 필터 적용, False면 해제
 PRESETS = {
     "LIGHT": {   # 완화형
         "PRICE_MIN": 3000,
-        "MCAP_MIN_WON": int(5e10),     # 700억
+        "MCAP_MIN_WON": int(5e10),     # 500억
         "VOL_MIN_0": 100_000,
         "VALUE_MIN_0_WON": int(1e9),   # 10억
     },
