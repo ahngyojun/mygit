@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-condition.py — 20MA 상승변곡(필수) + 3MA '안착/쌍바닥/신선도' + 절대필터 안정화
+condition.py — 20MA 상승변곡(필수) + 3MA '상승전환 시점' 즉시 포착 + 쌍바닥(외바닥 밑 제외)
 - 경로: C:\work\mygit
 - 입력: all_stock_data.json
 - 출력: selected.txt
 """
 
-from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Optional
-import os
-import math
 import numpy as np
 import pandas as pd
 import subprocess
-import datetime as dt
+import os
+import argparse
+import sys
 
 # =========================
 # 경로/입출력
@@ -24,390 +23,572 @@ REPO_DIR = Path(r"C:\work\mygit").resolve()
 INPUT_JSON = REPO_DIR / "all_stock_data.json"
 OUTPUT_TXT = REPO_DIR / "selected.txt"
 
-# =========================
-# 실행/로깅 옵션
-# =========================
-MODE = os.environ.get("MODE", "LIGHT").upper()  # LIGHT / TIGHT 등
-VERBOSE = bool(int(os.environ.get("VERBOSE", "1")))
-
 # --- Git autosave settings ---
-GIT_AUTOSAVE = os.environ.get("GIT_AUTOSAVE", "1") == "1"
-GIT_REMOTE = os.environ.get("GIT_REMOTE", "origin")
-GIT_BRANCH = os.environ.get("GIT_BRANCH", "main")
+GIT_AUTOSAVE = True          # 자동 저장 켜기/끄기
+GIT_REMOTE = "origin"        # 원격 이름
+GIT_BRANCH = "main"          # 푸시할 브랜치
 
-# =========================
-# 절대필터 파라미터 (환경변수로 튜닝)
-# =========================
-ABS_STRICT = os.environ.get("ABS_STRICT", "0") == "1"  # True=결측시 제외, False=결측시 통과
-MIN_PRICE = float(os.environ.get("MIN_PRICE", "1000"))        # 최저 가격(원)
-MAX_PRICE = float(os.environ.get("MAX_PRICE", "9999999999"))  # 최고 가격(원)
-MIN_TURNOVER = float(os.environ.get("MIN_TURNOVER", "1e8"))   # 일 거래대금 최소(원) 기본=1억
-MIN_MKTCAP_WON = float(os.environ.get("MIN_MKTCAP_WON", "5e10"))  # 시총 최소(원) 기본=500억
-EXCLUDE_ST = os.environ.get("EXCLUDE_ST", "1") == "1"         # 관리/투자주의 등 제외
-
-# =========================
-# 유틸
-# =========================
-def _safe_float(x: Any) -> Optional[float]:
+def git_autosave(repo_dir: Path, msg: str) -> None:
+    """
+    변경된 파일이 있으면 add/commit/push 수행.
+    변경 사항이 없으면 조용히 패스.
+    """
     try:
-        if x is None or (isinstance(x, float) and math.isnan(x)):
-            return None
-        s = str(x).strip().replace(",", "")
-        if s == "" or s.lower() in {"nan", "none", "null"}:
-            return None
+        cwd = str(repo_dir)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=cwd, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+        if not status:
+            print("[GIT] 변경 사항 없음 → 스킵")
+            return
+
+        subprocess.run(["git", "add", "-A"], cwd=cwd, check=True)
+        subprocess.run(["git", "commit", "-m", msg], cwd=cwd, check=True)
+        subprocess.run(["git", "push", GIT_REMOTE, GIT_BRANCH], cwd=cwd, check=True)
+        print(f"[GIT] push 완료 → {GIT_REMOTE}/{GIT_BRANCH}")
+    except subprocess.CalledProcessError as e:
+        print(f"[GIT][ERR] {e}")
+    except Exception as e:
+        print(f"[GIT][ERR] {type(e).__name__}: {e}")
+
+# =========================
+# 모드/필터 프리셋
+# =========================
+PRESETS = {
+    "LIGHT": {   # 완화형
+        "PRICE_MIN": 3000,
+        "MCAP_MIN_WON": int(5e10),     # 500억
+        "VOL_MIN_0": 100_000,
+        "VALUE_MIN_0_WON": int(1e9),   # 10억
+    },
+    "NORMAL": {  # 기본형
+        "PRICE_MIN": 5000,
+        "MCAP_MIN_WON": int(1e11),     # 1000억
+        "VOL_MIN_0": 200_000,
+        "VALUE_MIN_0_WON": int(2e9),   # 20억
+    },
+    "STRICT": {  # 강화형
+        "PRICE_MIN": 10_000,
+        "MCAP_MIN_WON": int(2e11),     # 2000억
+        "VOL_MIN_0": 300_000,
+        "VALUE_MIN_0_WON": int(3e9),   # 30억
+    },
+}
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    val = os.environ.get(name, "").strip().lower()
+    if val in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if val in ("0", "false", "f", "no", "n", "off"):
+        return False
+    return default
+
+def get_config_from_cli_env():
+    # 기본값: 환경변수 → 없으면 디폴트
+    env_mode = os.environ.get("MODE", "LIGHT").upper()
+    env_abs  = parse_bool_env("ABS_FILTER", False)
+
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--mode", choices=["LIGHT", "NORMAL", "STRICT"], default=env_mode,
+                        help="검색 강도 모드 (LIGHT/NORMAL/STRICT). 기본=환경변수 MODE 또는 LIGHT")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--abs-filter", dest="abs_filter", action="store_true",
+                       help="절대필터 사용(최종 단계에서 시총/거래량/거래대금 체크)")
+    group.add_argument("--no-abs-filter", dest="abs_filter", action="store_false",
+                       help="절대필터 미사용")
+    parser.set_defaults(abs_filter=env_abs)
+
+    # 파이참에서 Run/Debug 시에도 인자 파싱되도록
+    args, _ = parser.parse_known_args(sys.argv[1:])
+    mode = args.mode.upper()
+    if mode not in PRESETS:
+        raise ValueError(f"Unknown MODE: {mode}")
+    use_abs = bool(args.abs_filter)
+    return mode, use_abs
+
+# ---- LIGHT 완화 파라미터 (당일이 조용해도 평균으로 보완) ----
+VOL20_MIN_FACTOR = 0.6         # 20일 평균 거래량 ≥ (VOL_MIN_0 * 이 비율) 이면 OK
+VALUE20_MIN_FACTOR = 0.6       # 20일 평균 거래대금 ≥ (VALUE_MIN_0_WON * 이 비율) 이면 OK
+
+# 절대필터 상세 진단 카운터
+ABS_C_PRICE = 0
+ABS_C_MCAP  = 0
+ABS_C_VOL   = 0
+ABS_C_VAL   = 0
+
+# =========================
+# 기술 조건 파라미터
+# =========================
+INFLECT_LOOKBACK_20 = 40
+SLOPE_EPS_UP = 1e-9
+
+WIN_3MA = 40
+VOL_K = 1.0
+ALLOW_UNDER_PCT = 0.0
+NEED_LAST_UP = False
+DB_MIN_GAP = 3
+DB_MAX_GAP = 30
+DOJI_MAX_RATIO = 0.10
+SHORT_UPPER_WICK_RATIO = 0.25
+ANCHOR_OVERLAP_RATIO = 0.50  # 몸통 절반 이상 MA3 위
+
+EXCLUDE_KEYWORDS = [
+    "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우",
+    "우선주", "우B", "우C", "인버스", "레버리지", "선물", "풋", "콜",
+    "TRUST", "PLUS", "RISE", "KODEX", "TIGER", "KOSEF", "HANARO", "미국",
+    "ACE", "액티브", "KIWOOM", "SOL", "채권"
+]
+
+def is_excluded_name(name: str) -> bool:
+    """
+    종목명이 ETF, 리츠, 스팩, 우선주 등 제외 대상일 경우 True 반환.
+    영문/한글 혼합표기 모두 대응.
+    """
+    up = (name or "").upper()
+    return any(k in up for k in EXCLUDE_KEYWORDS)
+
+# =========================
+# 유틸 함수
+# =========================
+def rolling_ma(s: pd.Series, w: int) -> pd.Series:
+    return s.rolling(w, min_periods=w).mean()
+
+def _to_number(x):
+    """문자 숫자('1,234', '5.6e7', '123억', '12,345원')도 안전 변환"""
+    if x is None:
+        return np.nan
+    if isinstance(x, (int, float, np.number)):
+        return float(x)
+    try:
+        s = str(x).strip()
+        s = s.replace(",", "").replace("원", "").replace("KRW", "")
+        if s.endswith("억"):
+            base = s[:-1].strip()
+            return float(base) * 1e8
+        return float(s)
+    except Exception:
+        return np.nan
+
+def to_df(ohlcv_list: List[Dict[str, Any]]) -> pd.DataFrame:
+    df = pd.DataFrame(ohlcv_list)
+    if "date" in df.columns:
+        df = df.sort_values("date")
+    df = df.reset_index(drop=True)
+    # 숫자 컬럼 안전 변환
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df.columns:
+            df[col] = df[col].apply(_to_number)
+    # NA 처리
+    if {"open","high","low","close"}.issubset(df.columns):
+        df[["open","high","low","close"]] = df[["open","high","low","close"]].fillna(method="ffill").fillna(method="bfill")
+    if "volume" in df.columns:
+        df["volume"] = df["volume"].fillna(0).astype(float)
+    return df
+
+def _last_trading_idx(df: pd.DataFrame) -> int:
+    """최근 1~7봉 내에서 거래량>0인 마지막 실제 거래 봉 인덱스를 반환. 없으면 -1(마지막)."""
+    if "volume" in df.columns and len(df) > 0:
+        vols = df["volume"]
+        for i in range(1, min(7, len(vols)) + 1):
+            try:
+                if vols.iloc[-i] and vols.iloc[-i] > 0:
+                    return -i
+            except Exception:
+                continue
+    return -1
+
+# ---- 시총 파서 & 다중 경로 조회 ----
+def _parse_market_cap(raw) -> Optional[float]:
+    """원 단위 float로 반환. 없거나 파싱 실패면 None."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float, np.number)):
+        return float(raw)  # 숫자는 원으로 간주
+    try:
+        s = str(raw).strip().replace(",", "").replace("KRW", "").replace("원", "")
+        if s.endswith("억"):
+            base = float(s[:-1].strip())
+            return base * 1e8
         return float(s)
     except Exception:
         return None
 
-def _normalize_currency_to_won(x: Optional[float]) -> Optional[float]:
-    """
-    원/억 혼용값을 원 단위로 정규화.
-    휴리스틱:
-    - 1e9 이상이면 이미 '원'으로 본다.
-    - 1e2 ~ 1e6 사이면 억단위로 보고 *1e8
-    - 그 외는 값 자체를 신뢰.
-    """
-    if x is None:
-        return None
-    if x >= 1e9:          # 원 단위로 충분히 큼
-        return x
-    if 1e2 <= x <= 1e6:   # 억 단위로 흔히 쓰는 범위(대략적)
-        return x * 1e8
-    return x
+def get_market_cap(info: Dict[str, Any]) -> Optional[float]:
+    """가능한 모든 경로에서 시총을 찾는다. 못 찾으면 None."""
+    paths = [
+        ("market_cap",),
+        ("extra", "market_cap"),
+        ("opt10001", "market_cap"),
+        ("cap",),  # 과거 호환
+    ]
+    for path in paths:
+        cur = info
+        ok = True
+        for k in path:
+            if not (isinstance(cur, dict) and (k in cur)):
+                ok = False
+                break
+            cur = cur[k]
+        if ok:
+            val = _parse_market_cap(cur)
+            if val is not None:
+                return val
+    return None  # 누락 시 미적용
 
-def _ma(series: pd.Series, n: int) -> pd.Series:
-    return series.rolling(n, min_periods=n).mean()
+# =========================
+# 절대 필터 (MODE 프리셋) — 기술조건 이후 최종 단계에서 적용
+# =========================
+VOL20_MIN_FACTOR = 0.6         # LIGHT: 20일 평균 거래량 보조
+VALUE20_MIN_FACTOR = 0.6       # LIGHT: 20일 평균 거래대금 보조
+ABS_C_PRICE = ABS_C_MCAP = ABS_C_VOL = ABS_C_VAL = 0
 
-def _ema(series: pd.Series, span: int) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
+def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame, P: Dict[str, Any], MODE: str) -> bool:
+    global ABS_C_PRICE, ABS_C_MCAP, ABS_C_VOL, ABS_C_VAL
 
-def is_etf_name(name: str) -> bool:
-    if not name:
+    if df is None or len(df) == 0:
         return False
-    bad = ("ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "인프라", "선물", "Inverse", "인버스")
-    name_up = str(name).upper()
-    return any(t in name_up for t in bad)
 
-def is_warning_flags(flags: List[str]) -> bool:
-    # 종목 플래그(예: 관리종목, 투자주의 등)가 전달되는 경우 제외
-    if not flags:
+    idx = _last_trading_idx(df)
+    last_close = float(df["close"].iloc[idx]) if len(df) else 0.0
+    if not np.isfinite(last_close) or last_close <= 0:
+        ABS_C_PRICE += 1
         return False
-    bad = ("관리", "투자주의", "투자경고", "정리매매")
-    return any(any(b in f for b in bad) for f in flags)
 
-def git_autosave(repo_dir: Path, msg: str) -> None:
-    try:
-        subprocess.run(["git", "-C", str(repo_dir), "add", "-A"], check=True)
-        subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", msg], check=True)
-        subprocess.run(["git", "-C", str(repo_dir), "push", GIT_REMOTE, GIT_BRANCH], check=True)
-        if VERBOSE:
-            print(f"[GIT] push 완료 → {GIT_REMOTE}/{GIT_BRANCH} (msg: {msg})")
-    except subprocess.CalledProcessError as e:
-        print(f"[GIT] 오류: {e}")
+    # (1) 가격 하한
+    if last_close < P["PRICE_MIN"]:
+        ABS_C_PRICE += 1
+        return False
 
-# =========================
-# 절대필터 (결측치 내성 + 단위정규화 + 유연모드)
-# =========================
-def compute_derived_fields(info: Dict, df: pd.DataFrame) -> Dict[str, Optional[float]]:
-    """
-    info: {"name","mktcap","shares","last_price","turnover","flags", ...}
-    df: OHLCV DataFrame (date, open, high, low, close, volume, ...)
+    # (2) 시총 (있을 때만 적용 — 누락이면 미적용)
+    market_cap_won = get_market_cap(info)
+    if market_cap_won is not None:
+        if market_cap_won < P["MCAP_MIN_WON"]:
+            ABS_C_MCAP += 1
+            return False
 
-    반환: {"mktcap_won","turnover_won","last_price","shares"}
-    """
-    name = info.get("name", "")
-    last_row = df.iloc[-1] if len(df) else pd.Series(dtype=float)
+    # (3) 거래량/거래대금: 당일 + 20일 평균 보조 기준
+    vol0 = float(df["volume"].iloc[idx]) if len(df) else 0.0
+    vol20 = float(df["volume"].rolling(20, min_periods=1).mean().iloc[idx]) if len(df) else 0.0
 
-    # last_price 우선순위: info.last_price -> df.close[-1]
-    last_price = _safe_float(info.get("last_price"))
-    if last_price is None and "close" in last_row:
-        last_price = _safe_float(last_row["close"])
+    val0 = last_close * max(vol0, 0.0)   # info['vol_money'] 누락 대비
+    val20 = last_close * max(vol20, 0.0) # 20MA 가격 아님: 보수적으로 현재가 기준
 
-    # turnover(일 거래대금): info.turnover -> df.close[-1]*df.volume[-1]
-    turnover = _safe_float(info.get("turnover"))
-    if turnover is None and "close" in df.columns and "volume" in df.columns and len(df):
-        _close = _safe_float(df["close"].iloc[-1])
-        _vol = _safe_float(df["volume"].iloc[-1])
-        if _close is not None and _vol is not None:
-            turnover = _close * _vol
+    VOL_MIN_0 = P["VOL_MIN_0"]
+    VAL_MIN_0 = P["VALUE_MIN_0_WON"]
 
-    # shares: info.shares
-    shares = _safe_float(info.get("shares"))
-
-    # mktcap: info.mktcap -> last_price*shares
-    mktcap = _safe_float(info.get("mktcap"))
-    if mktcap is None and last_price is not None and shares is not None:
-        mktcap = last_price * shares
-
-    # 단위 정규화
-    mktcap_won = _normalize_currency_to_won(mktcap)
-    turnover_won = _normalize_currency_to_won(turnover)
-
-    return {
-        "mktcap_won": mktcap_won,
-        "turnover_won": turnover_won,
-        "last_price": last_price,
-        "shares": shares,
-        "name": name
-    }
-
-def absolute_filters(info: Dict, df: pd.DataFrame) -> Tuple[bool, List[str]]:
-    """
-    절대필터: ETF/ETN/리츠/스팩 제외, 가격/거래대금/시총 하한 등.
-    - ABS_STRICT=False(기본): 핵심값 결측시 '보류 통과'
-    - ABS_STRICT=True: 핵심값 결측시 '제외'
-    """
-    reasons: List[str] = []
-    name = str(info.get("name", ""))
-
-    # (0) 유형 제외
-    if is_etf_name(name):
-        reasons.append("ETF/ETN/리츠/스팩")
-        return False, reasons
-
-    # (1) 경고 플래그
-    if EXCLUDE_ST and is_warning_flags(info.get("flags", [])):
-        reasons.append("경고/관리/주의 플래그")
-        return False, reasons
-
-    # (2) 수치 조건
-    fields = compute_derived_fields(info, df)
-    price = fields["last_price"]
-    turnover_won = fields["turnover_won"]
-    mktcap_won = fields["mktcap_won"]
-
-    # 가격
-    if price is None:
-        if ABS_STRICT:
-            reasons.append("가격결측")
-            return False, reasons
+    if MODE == "LIGHT":
+        vol_ok = (vol0 >= VOL_MIN_0) or (vol20 >= VOL_MIN_0 * VOL20_MIN_FACTOR)
+        val_ok = (val0 >= VAL_MIN_0) or (val20 >= VAL_MIN_0 * VALUE20_MIN_FACTOR)
+        if not (vol_ok or val_ok):
+            if not vol_ok:
+                ABS_C_VOL += 1
+            if not val_ok:
+                ABS_C_VAL += 1
+            return False
     else:
-        if price < MIN_PRICE:
-            reasons.append(f"가격<{int(MIN_PRICE)}")
-        if price > MAX_PRICE:
-            reasons.append("가격>MAX")
+        # NORMAL/STRICT: 둘 다 충족(AND)
+        if vol0 < VOL_MIN_0:
+            ABS_C_VOL += 1
+            return False
+        if val0 < VAL_MIN_0:
+            ABS_C_VAL += 1
+            return False
 
-    # 거래대금
-    if turnover_won is None:
-        if ABS_STRICT:
-            reasons.append("거래대금결측")
-            return False, reasons
-    else:
-        if turnover_won < MIN_TURNOVER:
-            reasons.append(f"거래대금<{int(MIN_TURNOVER)}")
-
-    # 시총
-    if mktcap_won is None:
-        if ABS_STRICT:
-            reasons.append("시총결측")
-            return False, reasons
-    else:
-        if mktcap_won < MIN_MKTCAP_WON:
-            reasons.append(f"시총<{int(MIN_MKTCAP_WON)}")
-
-    if reasons:
-        # 이유가 하나라도 있으면 제외
-        return False, reasons
-    return True, reasons
+    return True
 
 # =========================
-# 20MA 상승 변곡 (필수)
+# 20MA 상승변곡 (필수)
 # =========================
-def cond_20ma_inflect_up(df: pd.DataFrame,
-                         min_len: int = 25,
-                         slope_eps: float = -1e-9,
-                         return_reason: bool = True) -> Optional[Dict]:
-    """
-    전제조건: 20MA 기울기 음→양 변곡(마지막 봉 기준)
-    """
-    if not {"close"}.issubset(df.columns) or len(df) < min_len:
-        return None
-    ma20 = _ma(df["close"], 20)
-    slope = ma20.diff()
-    if ma20.isna().iloc[-1] or slope.isna().iloc[-1]:
-        return None
-    turned_up = (slope.iloc[-2] <= slope_eps) and (slope.iloc[-1] > 0)
-    if not turned_up:
-        return None
-    return {"ok": True, "reason": "20ma_upturn"}
+def cond_20ma_inflect_up_required(df: pd.DataFrame) -> bool:
+    ma20 = rolling_ma(df["close"], 20)
+    d = ma20.diff()
+    end = len(df) - 1
+    start = max(2, end - INFLECT_LOOKBACK_20)
 
-# =========================
-# 3MA: 안착/쌍바닥/신선도
-# =========================
-def cond_3ma_fresh_combo(df: pd.DataFrame,
-                         window: int = 18,
-                         cross_window: int = 3,
-                         min_up_days: int = 2,
-                         allow_under_pct: float = 0.0,
-                         need_last_up: bool = False,
-                         return_reason: bool = True) -> Optional[Dict]:
-    """
-    - '갓 안착' 신선도: 최근 cross_window 이내에 종가가 3MA 위로 최초 재진입
-    - 쌍바닥/변곡 등은 간단화(세부 로직은 기존과 동일 가정)
-    """
-    if not {"close"}.issubset(df.columns) or len(df) < 25:
-        return None
+    hit = -1
+    for i in range(start, end + 1):
+        prev, cur = d.iloc[i - 1], d.iloc[i]
+        if (prev <= 0) and (cur > SLOPE_EPS_UP):
+            hit = i
+            break
 
-    close = df["close"].astype(float)
-    ma3 = _ma(close, 3)
-
-    # 최근 window 범위로 제한
-    sub = df.tail(max(window, cross_window+5)).copy()
-    sub_close = sub["close"].astype(float)
-    sub_ma3 = _ma(sub_close, 3)
-
-    # 최근 cross_window 이내에 아래→위 교차가 있었는지
-    cross_idx = []
-    for i in range(1, len(sub_ma3)):
-        if pd.notna(sub_ma3.iloc[i]) and pd.notna(sub_ma3.iloc[i-1]):
-            prev = sub_close.iloc[i-1] - sub_ma3.iloc[i-1]
-            now = sub_close.iloc[i] - sub_ma3.iloc[i]
-            if prev <= 0 and now > 0:
-                cross_idx.append(sub.index[i])
-
-    fresh_ok = False
-    if cross_idx:
-        # 마지막 교차가 cross_window 이내여야 함
-        last_cross_pos = list(sub.index).index(cross_idx[-1])
-        if (len(sub) - 1 - last_cross_pos) <= cross_window:
-            fresh_ok = True
-
-    # 마지막 봉 조건
-    last_close = sub_close.iloc[-1]
-    last_ma3 = sub_ma3.iloc[-1]
-    if pd.isna(last_ma3):
-        return None
-
-    if allow_under_pct <= 0:
-        if last_close < last_ma3:
-            return None
-    else:
-        if last_close < last_ma3 * (1 - allow_under_pct):
-            return None
-
-    if need_last_up:
-        if len(sub_close) >= 2 and not (last_close > sub_close.iloc[-2]):
-            return None
-
-    if not fresh_ok:
-        return None
-
-    return {"ok": True, "reason": "3ma_fresh_cross"}
+    if hit == -1:
+        return False
+    if not (d.iloc[-1] > 0):
+        return False
+    return True
 
 # =========================
-# 종합 조건(20MA 필수 + 3MA 시그널)
+# 3MA '상승전환 시점' 즉시 포착 (+쌍바닥: 외바닥 밑 제외)
 # =========================
-def cond_combo(df: pd.DataFrame) -> Optional[Dict]:
-    a = cond_20ma_inflect_up(df)
-    if not (a and a.get("ok")):
-        return None
-    b = cond_3ma_fresh_combo(df)
-    if b and b.get("ok"):
-        return {"ok": True, "cond": f"{a['reason']} + {b['reason']}"}
-    return None
+def cond_3ma_turning_point_capture(
+    df: pd.DataFrame,
+    window: int = 40,
+    vol_k: float = 1.0,
+    allow_under_pct: float = 0.0,
+    need_last_up: bool = False,
+    db_min_gap: int = 3,
+    db_max_gap: int = 30,
+    doji_max_ratio: float = 0.10,
+    short_upper_wick_ratio: float = 0.25,
+    anchor_overlap_ratio: float = 0.50,
+    max_anchor_delay: int = 1,
+    slope_eps: float = 1e-6,
+) -> bool:
+
+    close, open_, high, low, vol = df["close"], df["open"], df["high"], df["low"], df["volume"]
+    ma3 = close.rolling(3, min_periods=3).mean()
+    vol20 = vol.rolling(20, min_periods=1).mean()
+    d = ma3.diff()
+
+    end = len(df) - 1
+    start = max(2, end - window)
+
+    # --- 쌍바닥 탐지 (외바닥 밑 제외 로직 포함) ---
+    def _local_mins(s: pd.Series, sidx: int, eidx: int) -> List[int]:
+        out = []
+        sidx = max(sidx, 1)
+        eidx = min(eidx, len(s) - 2)
+        for i in range(sidx, eidx + 1):
+            if s.iloc[i] <= s.iloc[i-1] and s.iloc[i] <= s.iloc[i+1]:
+                out.append(i)
+        return out
+
+    mins = _local_mins(ma3, start, end)
+    outer_bottom_idx = mins[0] if mins else None
+    last_double_pair = None
+    if len(mins) >= 2:
+        b1, b2 = mins[-2], mins[-1]
+        gap = b2 - b1
+        if db_min_gap <= gap <= db_max_gap:
+            m1, m2 = float(ma3.iloc[b1]), float(ma3.iloc[b2])
+            if outer_bottom_idx is None or float(ma3.iloc[outer_bottom_idx]) <= m2:
+                if m2 >= m1:
+                    last_double_pair = (b1, b2)
+
+    # --- (전제) 최근 상승변곡 ---
+    turn_idx = -1
+    for i in range(end, max(start + 1, 2) - 1, -1):
+        prev, cur = d.iloc[i - 1], d.iloc[i]
+        if (prev <= 0 + slope_eps) and (cur > 0 + slope_eps):
+            turn_idx = i
+            break
+    if turn_idx == -1:
+        return False
+
+    # 쌍바닥이 있으면 변곡은 두 번째 저점 이후여야
+    if last_double_pair is not None and turn_idx <= last_double_pair[1]:
+        return False
+
+    # --- 안착 판정 ---
+    def _anchor_ok_at(idx: int) -> bool:
+        m_now = float(ma3.iloc[idx])
+        o_now, c_now = float(open_.iloc[idx]), float(close.iloc[idx])
+        h_now, l_now = float(high.iloc[idx]), float(low.iloc[idx])
+        body_top, body_bottom = max(o_now, c_now), min(o_now, c_now)
+        body_size = max(0.0, body_top - body_bottom)
+        range_size = max(1e-9, h_now - l_now)
+
+        overlap = max(0.0, body_top - max(body_bottom, m_now))
+        overlap_ratio = 0.0 if body_size == 0 else (overlap / body_size)
+
+        if overlap_ratio < ANCHOR_OVERLAP_RATIO:
+            return False
+
+        v_now, v20_now = int(vol.iloc[idx]), float(vol20.iloc[idx])
+        if v_now < v20_now * vol_k:
+            return False
+
+        if need_last_up and idx >= 1 and not (close.iloc[idx] > close.iloc[idx - 1]):
+            return False
+
+        return True
+
+    # --- (A) 변곡 그 봉에서 안착 OR (B) 변곡 후 상승구간 내 안착 ---
+    anchor_idx = None
+    scan_end = min(end, turn_idx + max_anchor_delay)
+    for i in range(turn_idx, scan_end + 1):
+        if d.iloc[i] <= 0 + slope_eps:
+            continue
+        if _anchor_ok_at(i):
+            anchor_idx = i
+            break
+
+    if anchor_idx is None:
+        return False
+
+    # --- 최근성: 안착봉이 0~1봉 이내 ---
+    if (end - anchor_idx) > 1:
+        return False
+
+    return True
 
 # =========================
-# 평가 & 저장
+# 메인
 # =========================
-def eval_symbol(code: str, info: dict) -> List[Tuple[str, str, int, str]]:
-    name = info.get("name", code)
-    ohlcv = info.get("ohlcv", [])
-    if not ohlcv:
-        return []
-    df = pd.DataFrame(ohlcv)
-    # 컬럼 표준화
-    if "date" in df.columns:
-        try:
-            df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
-        except Exception:
-            pass
-        df = df.sort_values("date")
-    for c in ("open","high","low","close","volume"):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["close"]).reset_index(drop=True)
-    if len(df) < 25:
-        return []
+DEBUG_MCAP = False
+DEBUG_SAMPLE = 8
+_dbg_cnt = 0
 
-    # 절대필터
-    ok_abs, reasons_abs = absolute_filters(info, df)
-    if not ok_abs:
-        return []
+def _dbg_mcap_once(code, info):
+    global _dbg_cnt
+    if not DEBUG_MCAP or _dbg_cnt >= DEBUG_SAMPLE:
+        return
+    print(f"[MCAP-DBG] {code} mcap={get_market_cap(info)}")
+    _dbg_cnt += 1
 
-    # 전략 조건
-    res = cond_combo(df)
-    if res and res.get("ok"):
-        last_close = int(df["close"].iloc[-1])
-        return [(code, name, last_close, res["cond"])]
-    return []
+def main():
+    # ---- 모드/필터 설정 읽기 ----
+    MODE, USE_ABSOLUTE_FILTER = get_config_from_cli_env()
+    P = PRESETS[MODE]
+    print(f"[CONFIG] MODE={MODE}  USE_ABSOLUTE_FILTER={USE_ABSOLUTE_FILTER}")
+    sys.stdout.flush()
 
-def run_all_to_selected(all_json_path: Path = INPUT_JSON, out_txt: Path = OUTPUT_TXT) -> Dict[str, int]:
-    if not all_json_path.exists():
-        raise FileNotFoundError(f"데이터 파일을 찾을 수 없음: {all_json_path}")
-    with all_json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    if not INPUT_JSON.exists():
+        print(f"[ERR] 입력 파일이 없습니다: {INPUT_JSON}")
+        return
 
-    total = len(data)
-    excluded = 0
-    schema_miss = 0
-    abs_fail = 0
-    pass_abs = 0
+    with open(INPUT_JSON, "r", encoding="utf-8") as f:
+        raw = json.load(f)
 
-    results: List[Tuple[str, str, int, str]] = []
-    for code, info in data.items():
-        try:
-            name = info.get("name", code)
-            ohlcv = info.get("ohlcv", [])
-            if not ohlcv:
-                schema_miss += 1
-                continue
-            df = pd.DataFrame(ohlcv)
-            df = df.dropna(subset=["close"]) if "close" in df.columns else df
-            if len(df) < 25:
-                excluded += 1
-                continue
+    total = len(raw)
+    selected: List[Tuple[str, str]] = []
 
-            ok_abs, _reasons = absolute_filters(info, df)
-            if not ok_abs:
-                abs_fail += 1
-                continue
-            else:
-                pass_abs += 1
+    # 디버그 카운터
+    c_total = c_excluded = c_short = c_schema = 0
+    c_abs_fail = c_20_fail = c_3_fail = 0
 
-            r = eval_symbol(code, info)
-            if r:
-                results.extend(r)
-        except Exception as e:
-            if VERBOSE:
-                print(f"[WARN] {code}({info.get('name','')}) 처리 중 오류: {e}")
+    for idx, (code, info) in enumerate(raw.items(), 1):
+        name = info.get("name", "")
+        c_total += 1
 
-    # 저장 (정렬: 가격 내림차순)
-    results.sort(key=lambda x: (-x[2], x[1]))
-    with out_txt.open("w", encoding="utf-8") as f:
-        for code, name, price, cond in results:
-            f.write(f"{code}\t{name}\t{price}\t{cond}\n")
+        # 🔥 ETF/리츠/스팩/우선주 등 제외
+        if is_excluded_name(name):
+            c_excluded += 1
+            continue
 
-    if VERBOSE:
-        print(f"[DONE:{MODE}] 종목 수: {len(results)} → {out_txt}")
-        print(f"[STATS] total={total} excluded={excluded} schema_miss={schema_miss}")
-        print(f"[STATS] abs_fail={abs_fail} pass_abs={pass_abs}")
+        ohlcv = info.get("ohlcv", [])
+        if not ohlcv or len(ohlcv) < 60:
+            c_short += 1
+            continue
+
+        df = to_df(ohlcv)
+        if not {"open", "high", "low", "close", "volume"}.issubset(df.columns):
+            c_schema += 1
+            continue
+
+        # 진행률 출력 (유지)
+        if idx == 1:
+            print("")
+        print(f"\r[검색중] {idx}/{total}  ({name})", end="", flush=True)
+
+        if DEBUG_MCAP and idx <= DEBUG_SAMPLE:
+            _dbg_mcap_once(code, info)
+
+        # ✅ 기술 조건 먼저
+        ok20 = cond_20ma_inflect_up_required(df)
+        if not ok20:
+            c_20_fail += 1
+            continue
+
+        ok3 = cond_3ma_turning_point_capture(
+            df,
+            window=WIN_3MA,
+            vol_k=VOL_K,
+            allow_under_pct=ALLOW_UNDER_PCT,
+            need_last_up=NEED_LAST_UP,
+            db_min_gap=DB_MIN_GAP,
+            db_max_gap=DB_MAX_GAP,
+            doji_max_ratio=DOJI_MAX_RATIO,
+            short_upper_wick_ratio=SHORT_UPPER_WICK_RATIO,
+            anchor_overlap_ratio=ANCHOR_OVERLAP_RATIO,
+        )
+        if not ok3:
+            c_3_fail += 1
+            continue
+
+        # ✅ 절대 필터는 최종 단계 (시총 누락시 미적용, LIGHT는 완화 로직)
+        if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df, P, MODE):
+            c_abs_fail += 1
+            continue
+
+        selected.append((code, name))
+
+    selected.sort(key=lambda x: x[1])
+    with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
+        for code, name in selected:
+            f.write(f"{code}\t{name}\n")
+
+    print(f"\n[DONE:{MODE}] 종목 수: {len(selected)} → {OUTPUT_TXT}")
+    # 단계별 통계
+    print(f"[STATS] total={c_total} excluded={c_excluded} short_df={c_short} schema_miss={c_schema}")
+    print(f"[STATS] abs_fail={c_abs_fail} 20ma_fail={c_20_fail} 3ma_fail={c_3_fail}")
+    if USE_ABSOLUTE_FILTER:
+        print(f"[ABS-DETAIL] price_fail={ABS_C_PRICE} mcap_fail={ABS_C_MCAP} vol_fail={ABS_C_VOL} val_fail={ABS_C_VAL}")
 
     # === GitHub autosave ===
     if GIT_AUTOSAVE:
         commit_msg = f"update selected ({MODE})"
-        git_autosave(REPO_DIR, commit_msg)
+        os.chdir(REPO_DIR)
+        ensure_gitignore_full(REPO_DIR)
 
-    return {
-        "total": total,
-        "results": len(results),
-        "excluded": excluded,
-        "schema_miss": schema_miss,
-        "abs_fail": abs_fail,
-        "pass_abs": pass_abs,
-    }
+        include_targets = ["selected.txt", "condition.py"]
+        exclude_patterns = [
+            "*.bak", "*.json", "selected_debug.json",
+            "__pycache__/", "*.pyc", ".idea/", ".vscode/"
+        ]
+
+        # .gitignore 자동 갱신
+        gitignore_path = REPO_DIR / ".gitignore"
+        existing = gitignore_path.read_text(encoding="utf-8").splitlines() if gitignore_path.exists() else []
+        new_lines = [p for p in exclude_patterns if p not in existing]
+        if new_lines:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(new_lines) + "\n")
+            print(f"[GIT] .gitignore 업데이트 완료 → {gitignore_path}")
+
+        # 커밋 대상만 add
+        for fname in include_targets:
+            path = REPO_DIR / fname
+            if path.exists():
+                subprocess.run(["git", "add", str(path)], check=False)
+
+        # 커밋 + 푸시
+        subprocess.run(["git", "commit", "-m", commit_msg], check=False)
+        subprocess.run(["git", "push", "origin", "main"], check=False)
+        print(f"[GIT] push 완료 → origin/main (files: {include_targets})")
 
 # =========================
-# 진입점
+# Git ignore 자동생성 (.bak / 대용량 JSON 제외)
+# =========================
+def ensure_gitignore_full(repo_dir: Path):
+    """
+    .gitignore에 백업/데이터/시스템 파일 제외 패턴 추가 (자동)
+    """
+    gitignore_path = repo_dir / ".gitignore"
+    patterns = [
+        "*.bak", "*_bak.json", "*_backup.json", "*.json.bak",
+        "all_stock_data_*.json.bak", "all_stock_data.json",
+        "selected_debug.json", "__pycache__/", "*.pyc", ".idea/", ".vscode/", ".DS_Store"
+    ]
+
+    existing = []
+    if gitignore_path.exists():
+        existing = gitignore_path.read_text(encoding="utf-8").splitlines()
+
+    new_lines = [p for p in patterns if p not in existing]
+    if new_lines:
+        with open(gitignore_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+        print(f"[GIT] .gitignore 업데이트 완료 → {gitignore_path}")
+    else:
+        print("[GIT] .gitignore 이미 최신 상태입니다.")
+
+# =========================
+# 메인 실행부
 # =========================
 if __name__ == "__main__":
-    run_all_to_selected(INPUT_JSON, OUTPUT_TXT)
+    ensure_gitignore_full(REPO_DIR)  # ✅ 실행 시 자동 반영
+    main()
