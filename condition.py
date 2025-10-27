@@ -20,7 +20,7 @@ import re  # ★ 시총 파서용 정규식
 # =========================
 # 모드 설정 (여기서만 바꾸면 됨)
 # =========================
-MODE = "STRICT"               # "LIGHT" / "NORMAL" / "STRICT"
+MODE = "LIGHT"               # "LIGHT" / "NORMAL" / "STRICT"
 USE_ABSOLUTE_FILTER = True    # True: 필터 적용 / False: 해제
 
 # =========================
