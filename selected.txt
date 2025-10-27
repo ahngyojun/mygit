@@ -1,0 +1,94 @@
+012450	한화에어로스페이스	1035000	20ma_upturn + 3ma_fresh_cross
+128940	한미약품	427500	20ma_upturn + 3ma_fresh_cross
+039490	키움증권	291500	20ma_upturn + 3ma_fresh_cross
+009970	영원무역홀딩스	142900	20ma_upturn + 3ma_fresh_cross
+105560	KB금융	118300	20ma_upturn + 3ma_fresh_cross
+438330	TIGER 우량회사채액티브	117700	20ma_upturn + 3ma_fresh_cross
+326030	SK바이오팜	115000	20ma_upturn + 3ma_fresh_cross
+034950	한국기업평가	98500	20ma_upturn + 3ma_fresh_cross
+302440	SK바이오사이언스	52800	20ma_upturn + 3ma_fresh_cross
+950160	코오롱티슈진	47200	20ma_upturn + 3ma_fresh_cross
+008930	한미사이언스	41850	20ma_upturn + 3ma_fresh_cross
+005810	풍산홀딩스	41300	20ma_upturn + 3ma_fresh_cross
+475830	오름테라퓨틱	39500	20ma_upturn + 3ma_fresh_cross
+294570	쿠콘	37200	20ma_upturn + 3ma_fresh_cross
+336260	두산퓨얼셀	31350	20ma_upturn + 3ma_fresh_cross
+041830	인바디	28550	20ma_upturn + 3ma_fresh_cross
+112040	위메이드	28100	20ma_upturn + 3ma_fresh_cross
+075580	세진중공업	23850	20ma_upturn + 3ma_fresh_cross
+007340	DN오토모티브	23400	20ma_upturn + 3ma_fresh_cross
+047560	이스트소프트	22250	20ma_upturn + 3ma_fresh_cross
+005940	NH투자증권	20700	20ma_upturn + 3ma_fresh_cross
+220100	퓨쳐켐	18750	20ma_upturn + 3ma_fresh_cross
+089980	상아프론테크	18000	20ma_upturn + 3ma_fresh_cross
+472350	1Q 차이나H(H)	17195	20ma_upturn + 3ma_fresh_cross
+060250	NHN KCP	16750	20ma_upturn + 3ma_fresh_cross
+230240	에치에프알	15900	20ma_upturn + 3ma_fresh_cross
+035510	신세계 I&C	15780	20ma_upturn + 3ma_fresh_cross
+032640	LG유플러스	15180	20ma_upturn + 3ma_fresh_cross
+019170	신풍제약	14940	20ma_upturn + 3ma_fresh_cross
+271980	제일약품	14620	20ma_upturn + 3ma_fresh_cross
+307520	TIGER 지주회사	14450	20ma_upturn + 3ma_fresh_cross
+314930	바이오다인	14090	20ma_upturn + 3ma_fresh_cross
+106190	하이텍팜	13760	20ma_upturn + 3ma_fresh_cross
+417860	오브젠	13640	20ma_upturn + 3ma_fresh_cross
+394280	오픈엣지테크놀로지	13100	20ma_upturn + 3ma_fresh_cross
+456070	이엔셀	12770	20ma_upturn + 3ma_fresh_cross
+101140	인바이오젠	12700	20ma_upturn + 3ma_fresh_cross
+288620	에스퓨얼셀	11920	20ma_upturn + 3ma_fresh_cross
+016580	환인제약	11530	20ma_upturn + 3ma_fresh_cross
+452280	한선엔지니어링	11420	20ma_upturn + 3ma_fresh_cross
+105630	한세실업	11250	20ma_upturn + 3ma_fresh_cross
+321410	KODEX 멀티에셋하이인컴(H)	10475	20ma_upturn + 3ma_fresh_cross
+0001P0	마이티 바이오시밀러&CDMO액티브	10370	20ma_upturn + 3ma_fresh_cross
+002460	HS화성	10340	20ma_upturn + 3ma_fresh_cross
+489000	PLUS 일본엔화초단기국채(합성)	10150	20ma_upturn + 3ma_fresh_cross
+318060	그래피	10020	20ma_upturn + 3ma_fresh_cross
+002100	경농	9760	20ma_upturn + 3ma_fresh_cross
+232680	라온테크	8970	20ma_upturn + 3ma_fresh_cross
+100790	미래에셋벤처투자	8660	20ma_upturn + 3ma_fresh_cross
+052020	에스티큐브	8350	20ma_upturn + 3ma_fresh_cross
+041440	현대에버다임	7900	20ma_upturn + 3ma_fresh_cross
+241520	DSC인베스트먼트	7700	20ma_upturn + 3ma_fresh_cross
+101730	위메이드맥스	7080	20ma_upturn + 3ma_fresh_cross
+109670	씨싸이트	6770	20ma_upturn + 3ma_fresh_cross
+041910	폴라리스AI파마	6540	20ma_upturn + 3ma_fresh_cross
+216080	제테마	6310	20ma_upturn + 3ma_fresh_cross
+424870	이뮨온시아	6120	20ma_upturn + 3ma_fresh_cross
+019180	티에이치엔	6090	20ma_upturn + 3ma_fresh_cross
+365270	큐라클	6080	20ma_upturn + 3ma_fresh_cross
+214390	경보제약	5910	20ma_upturn + 3ma_fresh_cross
+044340	위닉스	5820	20ma_upturn + 3ma_fresh_cross
+100220	비상교육	5750	20ma_upturn + 3ma_fresh_cross
+078020	LS증권	5520	20ma_upturn + 3ma_fresh_cross
+256840	한국비엔씨	5330	20ma_upturn + 3ma_fresh_cross
+003720	삼영	5180	20ma_upturn + 3ma_fresh_cross
+317530	캐리소프트	4810	20ma_upturn + 3ma_fresh_cross
+237750	피앤씨테크	4690	20ma_upturn + 3ma_fresh_cross
+303360	프로티아	4675	20ma_upturn + 3ma_fresh_cross
+317690	퀀타매트릭스	4500	20ma_upturn + 3ma_fresh_cross
+100660	서암기계공업	3970	20ma_upturn + 3ma_fresh_cross
+003000	부광약품	3855	20ma_upturn + 3ma_fresh_cross
+317770	엑스페릭스	3850	20ma_upturn + 3ma_fresh_cross
+030210	다올투자증권	3750	20ma_upturn + 3ma_fresh_cross
+096760	JW홀딩스	3350	20ma_upturn + 3ma_fresh_cross
+126560	현대퓨처넷	3235	20ma_upturn + 3ma_fresh_cross
+004140	동방	3115	20ma_upturn + 3ma_fresh_cross
+019660	글로본	2995	20ma_upturn + 3ma_fresh_cross
+065500	오리엔트정공	2900	20ma_upturn + 3ma_fresh_cross
+068100	케이웨더	2870	20ma_upturn + 3ma_fresh_cross
+261780	차백신연구소	2840	20ma_upturn + 3ma_fresh_cross
+096350	대창솔루션	2645	20ma_upturn + 3ma_fresh_cross
+246960	SCL사이언스	2580	20ma_upturn + 3ma_fresh_cross
+014790	HL D&I	2515	20ma_upturn + 3ma_fresh_cross
+100130	동국S&C	2465	20ma_upturn + 3ma_fresh_cross
+361570	알비더블유	2385	20ma_upturn + 3ma_fresh_cross
+067000	조이시티	2045	20ma_upturn + 3ma_fresh_cross
+024840	KBI메탈	1889	20ma_upturn + 3ma_fresh_cross
+058820	CMG제약	1878	20ma_upturn + 3ma_fresh_cross
+052420	오성첨단소재	1725	20ma_upturn + 3ma_fresh_cross
+246690	TS인베스트먼트	1676	20ma_upturn + 3ma_fresh_cross
+090370	메타랩스	1626	20ma_upturn + 3ma_fresh_cross
+085310	엔케이	1554	20ma_upturn + 3ma_fresh_cross
+048550	SM C&C	1386	20ma_upturn + 3ma_fresh_cross
+291650	압타머사이언스	1065	20ma_upturn + 3ma_fresh_cross
