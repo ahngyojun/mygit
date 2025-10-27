@@ -35,7 +35,7 @@ MODE = os.environ.get("MODE", "UPDATE").upper()  # UPDATE(기본) / FULL
 RECENT_FETCH = int(os.environ.get("RECENT_FETCH", "15"))
 MAX_DAYS = int(os.environ.get("MAX_DAYS", "240"))
 SLEEP_SEC = float(os.environ.get("SLEEP_SEC", "0.25"))
-DRY_RUN = int(os.environ.get("DRY_RUN", "0"))  # 0=off
+DRY_RUN = int(os.environ.get("DRY_RUN", "0"))  # 0=off → N개만 시험
 NEW_BOOTSTRAP_MAX = int(os.environ.get("NEW_BOOTSTRAP_MAX", "50"))
 REMOVE_DELISTED = os.environ.get("REMOVE_DELISTED", "0") == "1"
 SAVE_EVERY = int(os.environ.get("SAVE_EVERY", "40"))  # ⬅ 배치저장 단위
@@ -51,7 +51,7 @@ BACKOFF_BASE_SEC   = 2.0    # 재시도 백오프 시작값(2,4,6,...)
 # ================== Git 자동설정 / 자동저장 ==================
 GIT_AUTOSAVE = True          # 자동 저장 on/off
 GIT_REMOTE = "origin"        # 원격 이름
-GIT_BRANCH = "main"          # 기본 브랜치 (현재 브랜치 자동 감지로 대체됨)
+GIT_BRANCH = "main"          # 기본 브랜치 (현재 브랜치 자동 감지)
 
 def ensure_gitignore_full(repo_dir: Path):
     """
@@ -200,27 +200,55 @@ def start_tmp_housekeeping():
             os.replace(str(TEMP_FILE), str(SAVE_FILE))
         else:
             print("⚠️ 이전 tmp 정리(삭제)")
-            try: TEMP_FILE.unlink()
-            except Exception as e: print("   tmp 삭제 실패:", e)
+            try:
+                TEMP_FILE.unlink()
+            except Exception as e:
+                print("   tmp 삭제 실패:", e)
 
 def normalize_all_data(all_data: Dict[str, Dict], *, save_after=True) -> int:
-    """정렬/중복제거/롤링 유지."""
+    """
+    정렬/중복제거/롤링 유지 + 간단 보정:
+      - OHLCV 중복 제거 및 최신 MAX_DAYS만 유지
+      - market_cap==0 이고 price*shares>0이면 계산값으로 백필
+    """
     changed = 0
     for code, v in list(all_data.items()):
         ohlcv = v.get("ohlcv", [])
         if not isinstance(ohlcv, list):
-            all_data.pop(code, None); changed += 1; continue
+            all_data.pop(code, None)
+            changed += 1
+            continue
+
+        # 1) OHLCV 정렬/중복 제거/롤링 유지
         seen, uniq = set(), []
         for r in sorted(ohlcv, key=lambda x: x.get("date", "")):
             d = r.get("date")
             if d and d not in seen:
-                uniq.append(r); seen.add(d)
+                uniq.append(r)
+                seen.add(d)
         trimmed = uniq[-MAX_DAYS:] if MAX_DAYS > 0 else uniq
         if len(trimmed) != len(ohlcv):
-            all_data[code]["ohlcv"] = trimmed; changed += 1
+            all_data[code]["ohlcv"] = trimmed
+            changed += 1
+
+        # 2) 시총 백필
+        price = abs(int(v.get("price", 0))) if isinstance(v.get("price", 0), int) else abs(_to_int(v.get("price", 0)))
+        shares = int(v.get("shares_outstanding", 0)) if isinstance(v.get("shares_outstanding", 0), int) else _to_int(v.get("shares_outstanding", 0))
+        mcap = int(v.get("market_cap", 0)) if isinstance(v.get("market_cap", 0), int) else _to_int(v.get("market_cap", 0))
+        if mcap <= 0 and price > 0 and shares > 0:
+            all_data[code]["market_cap"] = price * shares
+            changed += 1
+
+        # 3) 거래대금 백필
+        vol = int(v.get("volume", 0)) if isinstance(v.get("volume", 0), int) else _to_int(v.get("volume", 0))
+        tv = int(v.get("trading_value", 0)) if isinstance(v.get("trading_value", 0), int) else _to_int(v.get("trading_value", 0))
+        if tv <= 0 and price > 0 and vol > 0:
+            all_data[code]["trading_value"] = price * vol
+            changed += 1
+
     if save_after and changed:
         atomic_save(all_data, SAVE_FILE, TEMP_FILE)
-        print(f">> 데이터 정규화: {changed}종목 ({MAX_DAYS}개 유지)")
+        print(f">> 데이터 정규화: {changed}종목 ({MAX_DAYS}개 유지/백필)")
     return changed
 
 # ================== 키움 래퍼 ==================
@@ -308,8 +336,10 @@ class Kiwoom:
             ).strip()
         for i in range(cnt):
             def to_int(s):
-                try: return abs(int(s))
-                except: return 0
+                try:
+                    return abs(int(s))
+                except:
+                    return 0
             date = get("일자", i)
             open_ = to_int(get("시가", i))
             high  = to_int(get("고가", i))
@@ -352,28 +382,54 @@ class Kiwoom:
         opt10001 주식기본정보요청
         반환: {'price': 현재가, 'market_cap': 시가총액(원), 'shares_outstanding': 상장주식수,
               'volume': 거래량, 'trading_value': 거래대금(원)}
+        (보강) 시총 필드 누락/편차 대응: '시가총액(억)' 환산 + price*shares 보정
         """
         def _send():
             self.ocx.dynamicCall("SetInputValue(QString, QString)", "종목코드", code)
             self.ocx.dynamicCall("CommRqData(QString, QString, int, QString)", "opt10001_req", "opt10001", 0, "1101")
+
         def _parse():
             def g(field):
                 return self.ocx.dynamicCall(
                     "GetCommData(QString, QString, int, QString)",
                     "opt10001", "opt10001_req", 0, field
                 ).strip()
+
             price  = _to_int(g("현재가"))
-            mcap   = _to_int(g("시가총액"))
-            shares = _to_int(g("상장주식수"))
             vol    = _to_int(g("거래량"))
-            value  = abs(price) * max(0, vol)
+            shares = _to_int(g("상장주식수"))
+
+            mcap_raw = _to_int(g("시가총액"))  # 원 단위일 수도, 빈문자열일 수도
+            if mcap_raw <= 0:
+                mcap_eok = _to_int(g("시가총액(억)"))
+                if mcap_eok > 0:
+                    mcap_raw = mcap_eok * 100_000_000  # 억 → 원
+
+            # 계산 보정
+            calc_mcap = abs(price) * max(0, shares)
+            market_cap = mcap_raw if mcap_raw > 0 else calc_mcap
+
+            # 응답값 vs 계산값 차이 클 때(>5%) 계산값 채택
+            if mcap_raw > 0 and calc_mcap > 0:
+                diff = abs(mcap_raw - calc_mcap) / max(mcap_raw, calc_mcap)
+                if diff > 0.05:
+                    market_cap = calc_mcap
+                    print(f"(i) {code} 시총 보정: resp={mcap_raw:,} → calc={calc_mcap:,}")
+
+            trading_value = abs(price) * max(0, vol)
+
+            # 경고 로깅
+            if shares == 0 or market_cap == 0:
+                print(f"(w) {code} opt10001 누락 감지 → shares={shares}, mcap={market_cap}, price={price}")
+
             return {
                 "price": price,
-                "market_cap": mcap,
+                "market_cap": market_cap,
                 "shares_outstanding": shares,
                 "volume": vol,
-                "trading_value": value,
+                "trading_value": trading_value,
             }
+
         out = self._with_retry(_send, _parse, desc=f"{code} opt10001")
         return out or {"price": 0, "market_cap": 0, "shares_outstanding": 0, "volume": 0, "trading_value": 0}
 
@@ -480,7 +536,7 @@ def main():
                 "market_cap": prev.get("market_cap", 0),
                 "shares_outstanding": prev.get("shares_outstanding", 0),
                 "volume": prev.get("volume", 0),
-                "trading_value": prev.get("trading_value", 0) or abs(prev.get("price", 0)) * max(0,prev.get("volume",0)),
+                "trading_value": prev.get("trading_value", 0) or abs(prev.get("price", 0)) * max(0, prev.get("volume", 0)),
             }
 
         print(f"[{idx}/{total}] {code} {name} 데이터 요청 중...")
