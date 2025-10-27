@@ -20,7 +20,7 @@ import sys
 # 모드 설정 (여기서만 바꾸면 됨)
 # =========================
 MODE = "STRICT"               # "LIGHT" / "NORMAL" / "STRICT"
-USE_ABSOLUTE_FILTER = True  # True: 필터 적용 / False: 해제
+USE_ABSOLUTE_FILTER = True    # True: 필터 적용 / False: 해제
 
 # =========================
 # 경로/입출력
@@ -83,6 +83,57 @@ PRESETS = {
     },
 }
 
+# =========================
+# 기술조건 프리셋 (모드별로 다르게)
+# =========================
+TECH_PRESETS = {
+    "LIGHT": {
+        "INFLECT_LOOKBACK_20": 50,   # 20MA 변곡 탐색 폭 (넓게)
+        "SLOPE_EPS_UP": 0.0,
+        "WIN_3MA": 50,               # 3MA 탐색 윈도우
+        "VOL_K": 0.8,                # 안착봉 거래량 기준 (v_now >= v20*VOL_K)
+        "ALLOW_UNDER_PCT": 0.02,     # 3MA 약간 하회 허용
+        "NEED_LAST_UP": False,
+        "DB_MIN_GAP": 2,
+        "DB_MAX_GAP": 32,
+        "DOJI_MAX_RATIO": 0.12,
+        "SHORT_UPPER_WICK_RATIO": 0.35,
+        "ANCHOR_OVERLAP_RATIO": 0.40, # 몸통 40% 이상 MA3 위
+        "MAX_ANCHOR_DELAY": 2,        # 변곡 후 0~2봉 내 안착 허용
+        "SLOPE_EPS_3MA": 1e-6,
+    },
+    "NORMAL": {
+        "INFLECT_LOOKBACK_20": 40,
+        "SLOPE_EPS_UP": 1e-9,
+        "WIN_3MA": 40,
+        "VOL_K": 1.0,
+        "ALLOW_UNDER_PCT": 0.0,
+        "NEED_LAST_UP": False,
+        "DB_MIN_GAP": 3,
+        "DB_MAX_GAP": 30,
+        "DOJI_MAX_RATIO": 0.10,
+        "SHORT_UPPER_WICK_RATIO": 0.25,
+        "ANCHOR_OVERLAP_RATIO": 0.50,
+        "MAX_ANCHOR_DELAY": 1,
+        "SLOPE_EPS_3MA": 1e-6,
+    },
+    "STRICT": {
+        "INFLECT_LOOKBACK_20": 35,   # 타이트
+        "SLOPE_EPS_UP": 1e-8,
+        "WIN_3MA": 30,
+        "VOL_K": 1.2,
+        "ALLOW_UNDER_PCT": 0.0,
+        "NEED_LAST_UP": True,        # 마지막 봉 상승 요구
+        "DB_MIN_GAP": 4,
+        "DB_MAX_GAP": 28,
+        "DOJI_MAX_RATIO": 0.08,
+        "SHORT_UPPER_WICK_RATIO": 0.20,
+        "ANCHOR_OVERLAP_RATIO": 0.60, # 몸통 60% 이상 MA3 위
+        "MAX_ANCHOR_DELAY": 0,        # 변곡 그 봉에서 바로 안착 요구
+        "SLOPE_EPS_3MA": 1e-6,
+    },
+}
+
 def parse_bool_env(name: str, default: bool) -> bool:
     val = os.environ.get(name, "").strip().lower()
     if val in ("1", "true", "t", "yes", "y", "on"):
@@ -92,13 +143,16 @@ def parse_bool_env(name: str, default: bool) -> bool:
     return default
 
 def get_config_from_cli_env():
-    # 기본값: 환경변수 → 없으면 디폴트
-    env_mode = os.environ.get("MODE", "LIGHT").upper()
-    env_abs  = parse_bool_env("ABS_FILTER", False)
+    """
+    파일 상단 토글(MODE/USE_ABSOLUTE_FILTER)을 기본값으로 사용.
+    환경변수/CLI 인자가 있으면 그 값으로 override.
+    """
+    env_mode = os.environ.get("MODE", MODE).upper()
+    env_abs  = parse_bool_env("ABS_FILTER", USE_ABSOLUTE_FILTER)
 
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--mode", choices=["LIGHT", "NORMAL", "STRICT"], default=env_mode,
-                        help="검색 강도 모드 (LIGHT/NORMAL/STRICT). 기본=환경변수 MODE 또는 LIGHT")
+                        help="검색 강도 모드 (LIGHT/NORMAL/STRICT). 기본=파일 상단 MODE 또는 환경변수 MODE")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--abs-filter", dest="abs_filter", action="store_true",
                        help="절대필터 사용(최종 단계에서 시총/거래량/거래대금 체크)")
@@ -106,7 +160,6 @@ def get_config_from_cli_env():
                        help="절대필터 미사용")
     parser.set_defaults(abs_filter=env_abs)
 
-    # 파이참에서 Run/Debug 시에도 인자 파싱되도록
     args, _ = parser.parse_known_args(sys.argv[1:])
     mode = args.mode.upper()
     if mode not in PRESETS:
@@ -114,32 +167,9 @@ def get_config_from_cli_env():
     use_abs = bool(args.abs_filter)
     return mode, use_abs
 
-# ---- LIGHT 완화 파라미터 (당일이 조용해도 평균으로 보완) ----
-VOL20_MIN_FACTOR = 0.6         # 20일 평균 거래량 ≥ (VOL_MIN_0 * 이 비율) 이면 OK
-VALUE20_MIN_FACTOR = 0.6       # 20일 평균 거래대금 ≥ (VALUE_MIN_0_WON * 이 비율) 이면 OK
-
-# 절대필터 상세 진단 카운터
-ABS_C_PRICE = 0
-ABS_C_MCAP  = 0
-ABS_C_VOL   = 0
-ABS_C_VAL   = 0
-
 # =========================
-# 기술 조건 파라미터
+# 제외 대상 (ETF/리츠/스팩/우선주 등)
 # =========================
-INFLECT_LOOKBACK_20 = 40
-SLOPE_EPS_UP = 1e-9
-
-WIN_3MA = 40
-VOL_K = 1.0
-ALLOW_UNDER_PCT = 0.0
-NEED_LAST_UP = False
-DB_MIN_GAP = 3
-DB_MAX_GAP = 30
-DOJI_MAX_RATIO = 0.10
-SHORT_UPPER_WICK_RATIO = 0.25
-ANCHOR_OVERLAP_RATIO = 0.50  # 몸통 절반 이상 MA3 위
-
 EXCLUDE_KEYWORDS = [
     "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우",
     "우선주", "우B", "우C", "인버스", "레버리지", "선물", "풋", "콜",
@@ -246,9 +276,15 @@ def get_market_cap(info: Dict[str, Any]) -> Optional[float]:
 # =========================
 # 절대 필터 (MODE 프리셋) — 기술조건 이후 최종 단계에서 적용
 # =========================
-VOL20_MIN_FACTOR = 0.6         # LIGHT: 20일 평균 거래량 보조
-VALUE20_MIN_FACTOR = 0.6       # LIGHT: 20일 평균 거래대금 보조
-ABS_C_PRICE = ABS_C_MCAP = ABS_C_VOL = ABS_C_VAL = 0
+# LIGHT 모드에서 20일 평균으로 보조 허용
+VOL20_MIN_FACTOR = 0.6         # 20일 평균 거래량 ≥ (VOL_MIN_0 * 이 비율) 이면 OK
+VALUE20_MIN_FACTOR = 0.6       # 20일 평균 거래대금 ≥ (VALUE_MIN_0_WON * 이 비율) 이면 OK
+
+# 절대필터 상세 진단 카운터
+ABS_C_PRICE = 0
+ABS_C_MCAP  = 0
+ABS_C_VOL   = 0
+ABS_C_VAL   = 0
 
 def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame, P: Dict[str, Any], MODE: str) -> bool:
     global ABS_C_PRICE, ABS_C_MCAP, ABS_C_VOL, ABS_C_VAL
@@ -305,18 +341,20 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame, P: Dict[str, A
     return True
 
 # =========================
-# 20MA 상승변곡 (필수)
+# 20MA 상승변곡 (필수) — 모드 파라미터 주입형
 # =========================
-def cond_20ma_inflect_up_required(df: pd.DataFrame) -> bool:
+def cond_20ma_inflect_up_required(df: pd.DataFrame,
+                                  lookback: int,
+                                  slope_eps_up: float) -> bool:
     ma20 = rolling_ma(df["close"], 20)
     d = ma20.diff()
     end = len(df) - 1
-    start = max(2, end - INFLECT_LOOKBACK_20)
+    start = max(2, end - lookback)
 
     hit = -1
     for i in range(start, end + 1):
         prev, cur = d.iloc[i - 1], d.iloc[i]
-        if (prev <= 0) and (cur > SLOPE_EPS_UP):
+        if (prev <= 0) and (cur > slope_eps_up):
             hit = i
             break
 
@@ -397,24 +435,41 @@ def cond_3ma_turning_point_capture(
         body_size = max(0.0, body_top - body_bottom)
         range_size = max(1e-9, h_now - l_now)
 
+        # 몸통이 MA3 위로 겹친 비율
         overlap = max(0.0, body_top - max(body_bottom, m_now))
         overlap_ratio = 0.0 if body_size == 0 else (overlap / body_size)
 
-        if overlap_ratio < ANCHOR_OVERLAP_RATIO:
+        if overlap_ratio < anchor_overlap_ratio:
             return False
 
+        # 윗꼬리 과도 방지 (요구시 활성화 가능)
+        _upper = max(0.0, h_now - body_top)
+        if body_size > 0 and (_upper / max(1e-9, range_size)) > short_upper_wick_ratio:
+            return False
+
+        # 도지 과도 방지
+        if range_size > 0 and (body_size / range_size) < (1 - doji_max_ratio):
+            pass  # body가 너무 작으면 걸러낼 수도 있음 (옵션화 가능)
+
+        # 거래량 기준
         v_now, v20_now = int(vol.iloc[idx]), float(vol20.iloc[idx])
         if v_now < v20_now * vol_k:
             return False
 
+        # 마지막 봉 상승 요구
         if need_last_up and idx >= 1 and not (close.iloc[idx] > close.iloc[idx - 1]):
             return False
+
+        # MA3 약간 하회 허용 (필요시)
+        if allow_under_pct > 0:
+            if close.iloc[idx] < m_now * (1 - allow_under_pct):
+                return False
 
         return True
 
     # --- (A) 변곡 그 봉에서 안착 OR (B) 변곡 후 상승구간 내 안착 ---
     anchor_idx = None
-    scan_end = min(end, turn_idx + max_anchor_delay)
+    scan_end = min(end, turn_idx + max(0, max_anchor_delay))
     for i in range(turn_idx, scan_end + 1):
         if d.iloc[i] <= 0 + slope_eps:
             continue
@@ -447,8 +502,14 @@ def _dbg_mcap_once(code, info):
 
 def main():
     # ---- 모드/필터 설정 읽기 ----
-    MODE, USE_ABSOLUTE_FILTER = get_config_from_cli_env()
+    MODE_runtime, USE_ABSOLUTE_FILTER_runtime = get_config_from_cli_env()
+    # 지역 변수로 고정 (아래 로그/커밋 메시지에 사용)
+    MODE = MODE_runtime
+    USE_ABSOLUTE_FILTER = USE_ABSOLUTE_FILTER_runtime
+
     P = PRESETS[MODE]
+    TP = TECH_PRESETS[MODE]
+
     print(f"[CONFIG] MODE={MODE}  USE_ABSOLUTE_FILTER={USE_ABSOLUTE_FILTER}")
     sys.stdout.flush()
 
@@ -493,23 +554,29 @@ def main():
         if DEBUG_MCAP and idx <= DEBUG_SAMPLE:
             _dbg_mcap_once(code, info)
 
-        # ✅ 기술 조건 먼저
-        ok20 = cond_20ma_inflect_up_required(df)
+        # ✅ 기술 조건 먼저 (모드별 파라미터 적용)
+        ok20 = cond_20ma_inflect_up_required(
+            df,
+            lookback=TP["INFLECT_LOOKBACK_20"],
+            slope_eps_up=TP["SLOPE_EPS_UP"]
+        )
         if not ok20:
             c_20_fail += 1
             continue
 
         ok3 = cond_3ma_turning_point_capture(
             df,
-            window=WIN_3MA,
-            vol_k=VOL_K,
-            allow_under_pct=ALLOW_UNDER_PCT,
-            need_last_up=NEED_LAST_UP,
-            db_min_gap=DB_MIN_GAP,
-            db_max_gap=DB_MAX_GAP,
-            doji_max_ratio=DOJI_MAX_RATIO,
-            short_upper_wick_ratio=SHORT_UPPER_WICK_RATIO,
-            anchor_overlap_ratio=ANCHOR_OVERLAP_RATIO,
+            window=TP["WIN_3MA"],
+            vol_k=TP["VOL_K"],
+            allow_under_pct=TP["ALLOW_UNDER_PCT"],
+            need_last_up=TP["NEED_LAST_UP"],
+            db_min_gap=TP["DB_MIN_GAP"],
+            db_max_gap=TP["DB_MAX_GAP"],
+            doji_max_ratio=TP["DOJI_MAX_RATIO"],
+            short_upper_wick_ratio=TP["SHORT_UPPER_WICK_RATIO"],
+            anchor_overlap_ratio=TP["ANCHOR_OVERLAP_RATIO"],
+            max_anchor_delay=TP["MAX_ANCHOR_DELAY"],
+            slope_eps=TP["SLOPE_EPS_3MA"],
         )
         if not ok3:
             c_3_fail += 1
