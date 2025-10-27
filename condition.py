@@ -19,7 +19,7 @@ import sys
 # =========================
 # 모드 설정 (여기서만 바꾸면 됨)
 # =========================
-MODE = "STRICT"               # "LIGHT" / "NORMAL" / "STRICT"
+MODE = "lIGHT"               # "LIGHT" / "NORMAL" / "STRICT"
 USE_ABSOLUTE_FILTER = True    # True: 필터 적용 / False: 해제
 
 # =========================
