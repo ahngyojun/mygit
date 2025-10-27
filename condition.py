@@ -56,7 +56,7 @@ def git_autosave(repo_dir: Path, msg: str) -> None:
 # 절대 필터 프리셋 (시총/주가/거래대금)
 # =========================
 MODE = "LIGHT"  # 선택: "LIGHT" / "NORMAL" / "STRICT"
-USE_ABSOLUTE_FILTER = False  # True면 필터 적용, False면 해제
+USE_ABSOLUTE_FILTER = True  # True면 필터 적용, False면 해제
 
 PRESETS = {
     "LIGHT": {   # 완화형
