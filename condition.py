@@ -98,7 +98,7 @@ DB_MIN_GAP = 3
 DB_MAX_GAP = 30
 DOJI_MAX_RATIO = 0.10
 SHORT_UPPER_WICK_RATIO = 0.25
-ANCHOR_OVERLAP_RATIO = 0.50
+ANCHOR_OVERLAP_RATIO = 0.50  # 몸통 절반 이상 MA3 위
 
 EXCLUDE_KEYWORDS = [
     "ETF", "ETN", "리츠", "REIT", "스팩", "SPAC", "우",   # ← 콤마 누락 버그 수정
@@ -346,34 +346,29 @@ def cond_3ma_turning_point_capture(
 
     # ---------- 안착 판정 함수 ----------
     def _anchor_ok_at(idx: int) -> bool:
+        """
+        '안착봉' 판정 기준 (몸통 절반 이상 MA3 위):
+        - 몸통의 MA3 위로 겹친 비율(overlap_ratio) ≥ ANCHOR_OVERLAP_RATIO(기본 0.50)
+        - 거래량 vol >= vol20 * vol_k
+        - (옵션) 전일 대비 종가 상승 필요 시 need_last_up=True
+        """
         m_now = float(ma3.iloc[idx])
         o_now, c_now = float(open_.iloc[idx]), float(close.iloc[idx])
         h_now, l_now = float(high.iloc[idx]), float(low.iloc[idx])
+
         body_top, body_bottom = max(o_now, c_now), min(o_now, c_now)
         body_size = max(0.0, body_top - body_bottom)
         range_size = max(1e-9, h_now - l_now)
 
-        if body_size > 0:
-            overlap = max(0.0, body_top - max(body_bottom, m_now))
-            overlap_ratio = overlap / body_size
-        else:
-            overlap_ratio = 0.0
+        # 몸통에서 MA3 위로 올라선 '겹친 높이' 비율
+        overlap = max(0.0, body_top - max(body_bottom, m_now))
+        overlap_ratio = 0.0 if body_size == 0 else (overlap / body_size)
 
-        is_doji = (body_size / range_size) <= doji_max_ratio
-        is_bear = c_now < o_now
-        upper_wick = max(0.0, h_now - body_top)
-        short_upper = (upper_wick / range_size) <= short_upper_wick_ratio
-        ma_ok = (c_now >= m_now * (1 - allow_under_pct))
-
-        cond = (
-            (overlap_ratio >= anchor_overlap_ratio)
-            or (is_doji and ma_ok)
-            or (is_bear and short_upper and ma_ok)
-        )
-        if not cond:
+        # === 핵심: 몸통 절반 이상이 MA3 위 ===
+        if overlap_ratio < ANCHOR_OVERLAP_RATIO:
             return False
 
-        # 거래량
+        # 거래량 조건
         v_now, v20_now = int(vol.iloc[idx]), float(vol20.iloc[idx])
         if v_now < v20_now * vol_k:
             return False
