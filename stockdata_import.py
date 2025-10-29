@@ -23,6 +23,7 @@ except Exception:
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QAxContainer import QAxWidget
 import subprocess
+import re  # ✅ 우선주/브랜드 판별용 정규식
 
 # ================== 설정 ==================
 REPO_DIR = Path(r"C:\work\mygit").resolve()
@@ -39,12 +40,13 @@ DRY_RUN = int(os.environ.get("DRY_RUN", "0"))  # 0=off → N개만 시험
 NEW_BOOTSTRAP_MAX = int(os.environ.get("NEW_BOOTSTRAP_MAX", "50"))
 REMOVE_DELISTED = os.environ.get("REMOVE_DELISTED", "0") == "1"
 SAVE_EVERY = int(os.environ.get("SAVE_EVERY", "40"))  # ⬅ 배치저장 단위
+VERBOSE = os.environ.get("VERBOSE", "1") == "1"       # 로그 상세도
 
 # ===== TR 속도 제한(Throttle) & 재시도 =====
 REQUEST_GAP_SEC    = 0.70   # 각 TR 사이 최소 간격(초) 0.6~0.9 권장
 LONG_PAUSE_EVERY   = 120    # N회마다
 LONG_PAUSE_SEC     = 6.0    # 길게 쉬기(서버 쿨다운)
-TR_TIMEOUT_SEC     = 7.0    # 한 TR 대기 타임아웃
+TR_TIMEOUT_SEC     = float(os.environ.get("TR_TIMEOUT_SEC", "7.0"))  # ⬅ 환경변수로 조정 가능
 MAX_TR_RETRIES     = 4      # 과도요청/무응답 시 재시도 횟수
 BACKOFF_BASE_SEC   = 2.0    # 재시도 백오프 시작값(2,4,6,...)
 
@@ -112,7 +114,7 @@ def git_autosave(repo_dir: Path, msg: str, patterns: Optional[List[str]] = None)
         if GIT_REMOTE not in remotes:
             print(f"[GIT] 원격 '{GIT_REMOTE}' 없음 → push 스킵")
             return
-        target_branch = current_branch or GIT_BRANCH
+        target_branch = current_branch if current_branch else GIT_BRANCH
         pr = _run_git(["git", "push", GIT_REMOTE, target_branch], cwd)
         if pr.returncode != 0:
             print(f"[GIT][PUSH ERR]\n{pr.stderr}")
@@ -133,18 +135,50 @@ _ETF_STYLE = {
     "천연가스","S&P","NASDAQ","나스닥","미국","중국","유로스톡스","선진국","신흥국",
     "TOP10","TOP5","퀄리티","모멘텀","밸류","고배당","배당","채권혼합","채권","금리"
 }
+
+# ✅ 우선주 정규식 (이름 끝에 '우', '우B', '우C', '우D', '우선주'가 오는 경우)
+_PREFERRED_PAT = re.compile(r"(우|우B|우C|우D|우선주)\s*$")
+
+# ✅ 영문 브랜드 토큰은 단어경계로만 매칭(오탑 방지), 한글/혼합 토큰은 기존 any() 유지
+_ENG_TOKENS = {
+    "ETF","ETN","KODEX","TIGER","KBSTAR","KOSEF","ARIRANG","HANARO","ACE",
+    "KINDEX","TIMEFOLIO","TREX","SMART","FOCUS","MARO","SOL","PLUS","RISE",
+    "ITF","HVOL","QV","HANBIT","NEOS","TOME"
+}
+
 def is_etf_name(name: str) -> bool:
-    """ETF/ETN/리츠/스팩/우선주/대표지수형 키워드 제외"""
-    if not name:
+    """
+    ETF/ETN/리츠/스팩/우선주/대표지수형 키워드 제외 (정확도 향상판)
+    """
+    if not isinstance(name, str) or not name.strip():
         return False
-    u = str(name).upper().strip()
-    if any(k in u for k in _ETF_BRANDS):
+
+    u = name.upper().strip()
+
+    # 1) 영문 브랜드 토큰: 단어 경계 매칭 (오탑 감소)
+    if any(re.search(rf"\b{re.escape(tok)}\b", u) for tok in _ENG_TOKENS):
         return True
+
+    # 2) 한글/스타일 토큰 광의 매칭
     if any(k in u for k in _ETF_STYLE):
         return True
-    if any(k in str(name) for k in ("우", "스팩", "리츠")):
+    if any(k in u for k in _ETF_BRANDS):  # (혼합명 방지 위해 위에서 ENG는 경계매칭, 여기선 보수용)
         return True
+
+    # 3) 리츠/스팩
+    if "리츠" in name or "스팩" in name:
+        return True
+
+    # 4) 우선주 (이름 끝이 우, 우B, 우C, 우D, 우선주)
+    if _PREFERRED_PAT.search(name):
+        return True
+
+    # 5) 대표지수형/선물지수
+    if any(idx in name for idx in ("코스피", "코스닥", "KRX", "200선물", "선물지수")):
+        return True
+
     return False
+
 
 # ================== 유틸 ==================
 def _to_int(s: str) -> int:
@@ -191,6 +225,14 @@ def atomic_save(obj: dict, path: Path, tmp_path: Path, *, retries: int = 5, dela
             pass
     except Exception as e:
         raise last_err or e
+
+def _fsync_safe(path: Path):
+    """전원 이슈 대비 파일 flush (선택)."""
+    try:
+        with open(path, "rb") as fh:
+            os.fsync(fh.fileno())
+    except Exception:
+        pass
 
 def start_tmp_housekeeping():
     """비정상 종료로 남은 tmp 정리/복원."""
@@ -248,6 +290,7 @@ def normalize_all_data(all_data: Dict[str, Dict], *, save_after=True) -> int:
 
     if save_after and changed:
         atomic_save(all_data, SAVE_FILE, TEMP_FILE)
+        _fsync_safe(SAVE_FILE)  # ✅ 배치 저장 후 flush (선택)
         print(f">> 데이터 정규화: {changed}종목 ({MAX_DAYS}개 유지/백필)")
     return changed
 
@@ -272,10 +315,10 @@ class Kiwoom:
         since = time.time() - self._last_tr_time
         if since < REQUEST_GAP_SEC:
             time.sleep(REQUEST_GAP_SEC - since)
-        # 잔여 대기시간 반영
+        # 잔여 대기시간 반영 (안전 가드)
         try:
             remain_ms = int(self.ocx.dynamicCall("GetCommRemainTime()"))
-            if remain_ms > 0:
+            if 0 < remain_ms < 60_000:
                 time.sleep(remain_ms / 1000.0 + 0.05)
         except Exception:
             pass
@@ -344,7 +387,8 @@ class Kiwoom:
             open_ = to_int(get("시가", i))
             high  = to_int(get("고가", i))
             low   = to_int(get("저가", i))
-            close = to_int(get("현재가", i))
+            # ✅ 환경차 대비: '현재가' 또는 '종가'
+            close = to_int(get("현재가", i) or get("종가", i))
             vol   = to_int(get("거래량", i))
             if date:
                 parsed.append({"date": date, "open": open_, "high": high, "low": low, "close": close, "volume": vol})
@@ -414,12 +458,13 @@ class Kiwoom:
                 diff = abs(mcap_raw - calc_mcap) / max(mcap_raw, calc_mcap)
                 if diff > 0.05:
                     market_cap = calc_mcap
-                    print(f"(i) {code} 시총 보정: resp={mcap_raw:,} → calc={calc_mcap:,}")
+                    if VERBOSE:
+                        print(f"(i) {code} 시총 보정: resp={mcap_raw:,} → calc={calc_mcap:,}")
 
             trading_value = abs(price) * max(0, vol)
 
             # 경고 로깅
-            if shares == 0 or market_cap == 0:
+            if (shares == 0 or market_cap == 0) and VERBOSE:
                 print(f"(w) {code} opt10001 누락 감지 → shares={shares}, mcap={market_cap}, price={price}")
 
             return {
@@ -466,6 +511,8 @@ def main():
     # 3) 키움 연결
     kiwoom = Kiwoom()
     kiwoom.connect()
+    if not kiwoom.login_ok:
+        raise RuntimeError("키움 로그인 실패: 세션 없음")
 
     # 4) 전체 코드 목록
     ALL_CODES = set(kiwoom.get_code_list())
@@ -487,6 +534,7 @@ def main():
         for c in delisted:
             all_data.pop(c, None)
         atomic_save(all_data, SAVE_FILE, TEMP_FILE)
+        _fsync_safe(SAVE_FILE)  # ✅ flush
         print(f"※ 상장폐지 {len(delisted)}개 제거")
 
     # 실행 대상
@@ -508,6 +556,10 @@ def main():
     # ===== 본 루프 =====
     changed = 0
     TODAY = datetime.now().strftime("%Y%m%d")
+
+    def _is_ymd(s: Optional[str]) -> bool:
+        return isinstance(s, str) and len(s) == 8 and s.isdigit()
+
     for idx, code in enumerate(loop_codes, 1):
         kiwoom.ensure_login()
         name = kiwoom.get_master_name(code) or ""
@@ -542,11 +594,12 @@ def main():
         print(f"[{idx}/{total}] {code} {name} 데이터 요청 중...")
 
         try:
+            # 신규/기존 + 길이 보정(128→240 등)
             exist = sorted(all_data.get(code, {"ohlcv": []})["ohlcv"], key=lambda x: x["date"])
             last_date = exist[-1]["date"] if exist else None
 
             # 오늘자까지 있으면 스킵 (이름/기본정보 갱신만 반영)
-            if MODE == "UPDATE" and last_date and last_date >= TODAY:
+            if MODE == "UPDATE" and _is_ymd(last_date) and last_date >= TODAY:
                 if code in all_data and all_data[code].get("name") != name:
                     all_data[code]["name"] = name
                 if code in all_data:
@@ -558,12 +611,18 @@ def main():
                 print(f"  건너뜀: 오늘자까지 보유 (last={last_date})")
                 continue
 
-            # 신규 vs 기존
-            if code in all_data:
-                recent = kiwoom.get_ohlcv(code, n=RECENT_FETCH)
+            # ✅ 길이 보정: 기존 보유 개수가 MAX_DAYS보다 작으면 이번에 크게 받아서 구간을 '늘림'
+            exist_len = len(exist)
+            need_widen = (MAX_DAYS > 0) and (exist_len > 0) and (exist_len < MAX_DAYS)
+
+            if (code not in all_data) or need_widen or (MODE == "FULL"):
+                fetch_n = MAX_DAYS if MAX_DAYS > 0 else 240
             else:
-                bootstrap_n = MAX_DAYS if MAX_DAYS > 0 else 240
-                recent = kiwoom.get_ohlcv(code, n=bootstrap_n)
+                fetch_n = RECENT_FETCH
+
+            recent = kiwoom.get_ohlcv(code, n=fetch_n)
+            if need_widen:
+                print(f"  (i) 길이 보정: {exist_len} → 최소 {min(MAX_DAYS, exist_len + len(recent))} (요청={fetch_n})")
 
             # 증분 병합
             seen = {x["date"] for x in exist}
@@ -586,6 +645,7 @@ def main():
             # N개마다 배치 저장
             if changed % SAVE_EVERY == 0:
                 atomic_save(all_data, SAVE_FILE, TEMP_FILE)
+                _fsync_safe(SAVE_FILE)  # ✅ flush
                 print(f"  ⏺ 배치 저장 ({changed} changes)")
 
             print(f"  저장 예정: +{len(to_add)}개, 총 {len(merged)}개 (last={merged[-1]['date'] if merged else 'NA'})")
@@ -598,6 +658,7 @@ def main():
     # 마지막 저장
     if changed:
         atomic_save(all_data, SAVE_FILE, TEMP_FILE)
+        _fsync_safe(SAVE_FILE)  # ✅ flush
     print("✅ 전체 완료 →", SAVE_FILE)
 
     # === GitHub autosave: .py만 커밋/푸시 (JSON/BAK는 .gitignore로 제외) ===
