@@ -20,7 +20,7 @@ import re  # 시총/상장주식수 파서용
 # =========================
 # 모드 설정 (각자 독립 설정 가능)
 # =========================
-MODE_3MA = "LIGHT"           # "LIGHT" / "NORMAL" / "STRICT"  → 3MA 안착 강도(0봉/1봉) 등
+MODE_3MA = "NORMAL"           # "LIGHT" / "NORMAL" / "STRICT"  → 3MA 안착 강도(0봉/1봉) 등
 MODE_ABS = "LIGHT"            # "LIGHT" / "NORMAL" / "STRICT"  → 절대필터 강도(가격/시총/거래량/대금)
 USE_ABSOLUTE_FILTER = True    # True: 절대필터 적용 / False: 미적용
 
