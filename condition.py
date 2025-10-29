@@ -18,10 +18,11 @@ import sys
 import re  # 시총/상장주식수 파서용
 
 # =========================
-# 모드 설정 (여기서만 바꾸면 됨)
+# 모드 설정 (각자 독립 설정 가능)
 # =========================
-MODE = "STRICT"               # "LIGHT" / "NORMAL" / "STRICT"
-USE_ABSOLUTE_FILTER = True    # True: 필터 적용 / False: 해제
+MODE_3MA = "STRICT"           # "LIGHT" / "NORMAL" / "STRICT"  → 3MA 안착 강도(0봉/1봉) 등
+MODE_ABS = "LIGHT"            # "LIGHT" / "NORMAL" / "STRICT"  → 절대필터 강도(가격/시총/거래량/대금)
+USE_ABSOLUTE_FILTER = True    # True: 절대필터 적용 / False: 미적용
 
 # =========================
 # 경로/입출력
@@ -99,6 +100,7 @@ TECH_PRESETS = {
         "ANCHOR_OVERLAP_RATIO": 0.40,
         "MAX_ANCHOR_DELAY": 2,
         "SLOPE_EPS_3MA": 1e-6,
+        "RECENT_MAX_AGE": 1,   # 0~1봉 허용
     },
     "NORMAL": {
         "INFLECT_LOOKBACK_20": 40,
@@ -114,6 +116,7 @@ TECH_PRESETS = {
         "ANCHOR_OVERLAP_RATIO": 0.50,
         "MAX_ANCHOR_DELAY": 1,
         "SLOPE_EPS_3MA": 1e-6,
+        "RECENT_MAX_AGE": 1,   # 0~1봉 허용
     },
     "STRICT": {
         "INFLECT_LOOKBACK_20": 35,
@@ -129,6 +132,7 @@ TECH_PRESETS = {
         "ANCHOR_OVERLAP_RATIO": 0.60,
         "MAX_ANCHOR_DELAY": 0,
         "SLOPE_EPS_3MA": 1e-6,
+        "RECENT_MAX_AGE": 0,   # 0봉만
     },
 }
 
@@ -142,28 +146,55 @@ def parse_bool_env(name: str, default: bool) -> bool:
 
 def get_config_from_cli_env():
     """
-    파일 상단 토글(MODE/USE_ABSOLUTE_FILTER)을 기본값으로 사용.
+    파일 상단 토글을 기본값으로 사용.
     환경변수/CLI 인자가 있으면 그 값으로 override.
+    하위호환: --mode 혹은 MODE 로 두 모드(MODE_3MA/MODE_ABS) 동시에 설정 가능.
     """
-    env_mode = os.environ.get("MODE", MODE).upper()
-    env_abs  = parse_bool_env("ABS_FILTER", USE_ABSOLUTE_FILTER)
+    # ----- 환경변수 우선 읽기 -----
+    # 글로벌 MODE가 있으면 두 모드에 기본으로 전파 (하위호환)
+    env_mode_global = os.environ.get("MODE", "").strip() or None
+    env_mode_3ma = os.environ.get("MODE_3MA", "").strip() or env_mode_global or MODE_3MA
+    env_mode_abs = os.environ.get("MODE_ABS", "").strip() or env_mode_global or MODE_ABS
+    env_abs_flag = parse_bool_env("ABS_FILTER", USE_ABSOLUTE_FILTER)
 
     parser = argparse.ArgumentParser(add_help=True)
-    parser.add_argument("--mode", choices=["LIGHT", "NORMAL", "STRICT"], default=env_mode,
-                        help="검색 강도 모드 (LIGHT/NORMAL/STRICT). 기본=파일 상단 MODE 또는 환경변수 MODE")
+    # 하위호환: --mode 하나로 두 모드 동시 지정 가능
+    parser.add_argument("--mode", choices=["LIGHT", "NORMAL", "STRICT"], help="하위호환: 3MA/ABS를 동시에 이 모드로 설정")
+    # 독립 지정
+    parser.add_argument("--mode-3ma", "--mode3", dest="mode_3ma",
+                        choices=["LIGHT", "NORMAL", "STRICT"],
+                        default=env_mode_3ma,
+                        help="3MA 기술조건 모드 (안착 신선도 등)")
+    parser.add_argument("--mode-abs", "--modeabs", dest="mode_abs",
+                        choices=["LIGHT", "NORMAL", "STRICT"],
+                        default=env_mode_abs,
+                        help="절대필터 모드 (가격/시총/거래량/대금)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--abs-filter", dest="abs_filter", action="store_true",
-                       help="절대필터 사용(최종 단계에서 시총/거래량/거래대금 체크)")
+                       help="절대필터 사용")
     group.add_argument("--no-abs-filter", dest="abs_filter", action="store_false",
                        help="절대필터 미사용")
-    parser.set_defaults(abs_filter=env_abs)
+    parser.set_defaults(abs_filter=env_abs_flag)
 
     args, _ = parser.parse_known_args(sys.argv[1:])
-    mode = args.mode.upper()
-    if mode not in PRESETS:
-        raise ValueError(f"Unknown MODE: {mode}")
+
+    # --mode가 들어오면 두 모드에 동시 적용 (명시적 개별 지정이 있으면 그 값이 우선)
+    if args.mode:
+        base = args.mode.upper()
+        mode_3ma = (args.mode_3ma or base).upper()
+        mode_abs = (args.mode_abs or base).upper()
+    else:
+        mode_3ma = (args.mode_3ma or env_mode_3ma).upper()
+        mode_abs = (args.mode_abs or env_mode_abs).upper()
+
+    # 최종 검증
+    if mode_3ma not in TECH_PRESETS:
+        raise ValueError(f"Unknown 3MA MODE: {mode_3ma}")
+    if mode_abs not in PRESETS:
+        raise ValueError(f"Unknown ABS MODE: {mode_abs}")
+
     use_abs = bool(args.abs_filter)
-    return mode, use_abs
+    return mode_3ma, mode_abs, use_abs
 
 # =========================
 # 제외 대상 (ETF/리츠/스팩/우선주 등)
@@ -437,8 +468,8 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame, P: Dict[str, A
     vol0 = float(df["volume"].iloc[idx]) if len(df) else 0.0
     vol20 = float(df["volume"].rolling(20, min_periods=1).mean().iloc[idx]) if len(df) else 0.0
 
-    val0 = last_close * max(vol0, 0.0)   # info['vol_money'] 누락 대비
-    val20 = last_close * max(vol20, 0.0) # 20MA 가격 아님: 보수적으로 현재가 기준
+    val0 = last_close * max(vol0, 0.0)
+    val20 = last_close * max(vol20, 0.0)
 
     VOL_MIN_0 = P["VOL_MIN_0"]
     VAL_MIN_0 = P["VALUE_MIN_0_WON"]
@@ -511,6 +542,7 @@ def cond_3ma_turning_point_capture(
     anchor_overlap_ratio: float = 0.50,
     max_anchor_delay: int = 1,
     slope_eps: float = 1e-6,
+    recent_max_age: int = 1,   # ‘안착 후 허용 지연 봉수’ (0이면 0봉만)
 ) -> bool:
 
     close, open_, high, low, vol = df["close"], df["open"], df["high"], df["low"], df["volume"]
@@ -605,8 +637,8 @@ def cond_3ma_turning_point_capture(
     if anchor_idx is None:
         return False
 
-    # --- 최근성: 안착봉이 0~1봉 이내 ---
-    if (end - anchor_idx) > 1:
+    # --- 최근성: 안착 recent_max_age 봉 이내 ---
+    if (end - anchor_idx) > recent_max_age:
         return False
 
     return True
@@ -633,9 +665,7 @@ def ensure_gitignore_full(repo_dir: Path):
         "all_stock_data_*.json.bak", "all_stock_data.json",
         "selected_debug.json", "__pycache__/", "*.pyc", ".idea/", ".vscode/", ".DS_Store"
     ]
-    existing = []
-    if gitignore_path.exists():
-        existing = gitignore_path.read_text(encoding="utf-8").splitlines()
+    existing = gitignore_path.read_text(encoding="utf-8").splitlines() if gitignore_path.exists() else []
     new_lines = [p for p in patterns if p not in existing]
     if new_lines:
         with open(gitignore_path, "a", encoding="utf-8") as f:
@@ -649,14 +679,15 @@ def ensure_gitignore_full(repo_dir: Path):
 # =========================
 def main():
     # ---- 모드/필터 설정 읽기 ----
-    MODE_runtime, USE_ABSOLUTE_FILTER_runtime = get_config_from_cli_env()
-    MODE = MODE_runtime
-    USE_ABSOLUTE_FILTER = USE_ABSOLUTE_FILTER_runtime
+    MODE_3MA_rt, MODE_ABS_rt, USE_ABS_rt = get_config_from_cli_env()
+    MODE_3MA_FINAL = MODE_3MA_rt
+    MODE_ABS_FINAL = MODE_ABS_rt
+    USE_ABSOLUTE_FILTER = USE_ABS_rt
 
-    P = PRESETS[MODE]
-    TP = TECH_PRESETS[MODE]
+    P = PRESETS[MODE_ABS_FINAL]          # 절대필터용 프리셋
+    TP = TECH_PRESETS[MODE_3MA_FINAL]    # 기술조건(3MA/20MA)용 프리셋
 
-    print(f"[CONFIG] MODE={MODE}  USE_ABSOLUTE_FILTER={USE_ABSOLUTE_FILTER}")
+    print(f"[CONFIG] 3MA_MODE={MODE_3MA_FINAL}  ABS_MODE={MODE_ABS_FINAL}  USE_ABSOLUTE_FILTER={USE_ABSOLUTE_FILTER}")
     sys.stdout.flush()
 
     if not INPUT_JSON.exists():
@@ -723,13 +754,14 @@ def main():
             anchor_overlap_ratio=TP["ANCHOR_OVERLAP_RATIO"],
             max_anchor_delay=TP["MAX_ANCHOR_DELAY"],
             slope_eps=TP["SLOPE_EPS_3MA"],
+            recent_max_age=TP.get("RECENT_MAX_AGE", 1),
         )
         if not ok3:
             c_3_fail += 1
             continue
 
         # ✅ 절대 필터 (시총 누락→보정, LIGHT는 완화 로직)
-        if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df, P, MODE):
+        if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df, P, MODE_ABS_FINAL):
             c_abs_fail += 1
             continue
 
@@ -740,7 +772,7 @@ def main():
         for code, name in selected:
             f.write(f"{code}\t{name}\n")
 
-    print(f"\n[DONE:{MODE}] 종목 수: {len(selected)} → {OUTPUT_TXT}")
+    print(f"\n[DONE:{MODE_3MA_FINAL}/{MODE_ABS_FINAL}] 종목 수: {len(selected)} → {OUTPUT_TXT}")
     # 단계별 통계
     print(f"[STATS] total={c_total} excluded={c_excluded} short_df={c_short} schema_miss={c_schema}")
     print(f"[STATS] abs_fail={c_abs_fail} 20ma_fail={c_20_fail} 3ma_fail={c_3_fail}")
@@ -749,7 +781,7 @@ def main():
 
     # === GitHub autosave ===
     if GIT_AUTOSAVE:
-        commit_msg = f"update selected ({MODE})"
+        commit_msg = f"update selected ({MODE_3MA_FINAL}/{MODE_ABS_FINAL})"
         os.chdir(REPO_DIR)
         ensure_gitignore_full(REPO_DIR)
 
@@ -759,7 +791,7 @@ def main():
             "__pycache__/", "*.pyc", ".idea/", ".vscode/"
         ]
 
-        # .gitignore 자동 갱신
+        # .gitignore 자동 갱신 (수정 완료 버전)
         gitignore_path = REPO_DIR / ".gitignore"
         existing = gitignore_path.read_text(encoding="utf-8").splitlines() if gitignore_path.exists() else []
         new_lines = [p for p in exclude_patterns if p not in existing]
@@ -767,6 +799,8 @@ def main():
             with open(gitignore_path, "a", encoding="utf-8") as f:
                 f.write("\n".join(new_lines) + "\n")
             print(f"[GIT] .gitignore 업데이트 완료 → {gitignore_path}")
+        else:
+            print("[GIT] .gitignore 이미 최신 상태입니다.")
 
         # 커밋 대상만 add
         for fname in include_targets:
