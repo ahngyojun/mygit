@@ -93,8 +93,8 @@ TECH_PRESETS = {
         "VOL_K": 0.8,
         "ALLOW_UNDER_PCT": 0.02,
         "NEED_LAST_UP": False,
-        "DB_MIN_GAP": 2,
-        "DB_MAX_GAP": 32,
+        "DB_MIN_GAP": 2,                        # 3MA 단기 눌림·되돌림 중심 (단타용)
+        "DB_MAX_GAP": 20,
         "DOJI_MAX_RATIO": 0.12,
         "SHORT_UPPER_WICK_RATIO": 0.35,
         "ANCHOR_OVERLAP_RATIO": 0.40,
@@ -109,8 +109,8 @@ TECH_PRESETS = {
         "VOL_K": 1.0,
         "ALLOW_UNDER_PCT": 0.0,
         "NEED_LAST_UP": False,
-        "DB_MIN_GAP": 3,
-        "DB_MAX_GAP": 30,
+        "DB_MIN_GAP": 3,                        # 짧은 쌍바닥 기반 스윙
+        "DB_MAX_GAP": 24,
         "DOJI_MAX_RATIO": 0.10,
         "SHORT_UPPER_WICK_RATIO": 0.25,
         "ANCHOR_OVERLAP_RATIO": 0.50,
@@ -119,14 +119,14 @@ TECH_PRESETS = {
         "RECENT_MAX_AGE": 1,   # 0~1봉 허용
     },
     "STRICT": {
-        "INFLECT_LOOKBACK_20": 35,
-        "SLOPE_EPS_UP": 1e-8,
-        "WIN_3MA": 30,
-        "VOL_K": 1.2,
-        "ALLOW_UNDER_PCT": 0.0,
-        "NEED_LAST_UP": True,
-        "DB_MIN_GAP": 4,
-        "DB_MAX_GAP": 28,
+        "INFLECT_LOOKBACK_20": 35,  # 20MA 변곡 탐색 구간, 최근 35봉 내에서 20MA가 하락→상승으로 전환된 시점
+        "SLOPE_EPS_UP": 1e-8,       # 20MA 상승 판정 민감도, 20MA 기울기가 0 이상일 때 “상승”으로 간주하는 최소 변화량.
+        "WIN_3MA": 30,              # 3MA 탐색 윈도우, 최근 30봉 내에서 3MA 쌍바닥/변곡 패턴을 탐색.
+        "VOL_K": 1.2,               # 3MA 상승 전환 판정 민감도, 3MA가 하락→상승으로 바뀌는 최소 기울기 변화.
+        "ALLOW_UNDER_PCT": 0.0,     # 3MA 대비 종가 허용 하락폭, 종가가 3MA보다 얼마나 밑에 있어도 허용할지 결정. 예: 0.02면 2%까지 밑 허용.
+        "NEED_LAST_UP": True,       # 마지막 봉 상승 여부 필수, True면 **마지막 봉이 양봉(또는 전일 대비 상승)**이어야 조건 통과.
+        "DB_MIN_GAP": 4,            # 쌍바닥 최소 간격
+        "DB_MAX_GAP": 28,           # 쌍바닥 최대 간격 ,   중기형 정통 쌍바닥
         "DOJI_MAX_RATIO": 0.08,
         "SHORT_UPPER_WICK_RATIO": 0.20,
         "ANCHOR_OVERLAP_RATIO": 0.60,
