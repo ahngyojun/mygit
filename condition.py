@@ -66,7 +66,7 @@ PRESETS = {
         "PRICE_MIN": 3000,             # 주가
         "MCAP_MIN_WON": int(5e10),     # 시총 500억
         "VOL_MIN_0": 100_000,          # 거래량
-        "VALUE_MIN_0_WON": int(1e9),   # 10억
+        "VALUE_MIN_0_WON": int(1e9),   # 거래대금 10억
     },
     "NORMAL": {  # 기본형
         "PRICE_MIN": 5000,
