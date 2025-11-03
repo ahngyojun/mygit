@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*- 251103
 """
 condition.py — 20MA 상승변곡(필수) + 3MA '상승전환 시점' 즉시 포착 + 쌍바닥(외바닥 밑 제외)
 - 경로: C:\work\mygit
@@ -448,29 +448,21 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame, P: Dict[str, A
         print(f"[ABS-DBG] price_fail  close={last_close:.0f}  min={P['PRICE_MIN']}")
         return False
 
-    # (2) 시총: 반드시 존재해야 함 (보정 시도 후에도 None이면 FAIL)
+    # (2) 시총: 값이 ‘있고 >0’일 때 비교, 없으면 보정 시도
     market_cap_won = get_market_cap(info)
     if market_cap_won is None:
         shares = get_listed_shares(info)
         if shares and shares > 0:
             market_cap_won = shares * last_close
             print(f"[ABS-DBG] mcap_fallback  shares={shares:.0f}  close={last_close:.0f}  mcap≈{market_cap_won:.0f}")
+    if (market_cap_won is not None) and (market_cap_won <= 0):
+        market_cap_won = None  # 안전
 
-    # 최종적으로도 None이면 컷
-    if market_cap_won is None:
-        ABS_C_MCAP += 1
-        print(f"[ABS-DBG] mcap_missing_fail  min={P['MCAP_MIN_WON']}")
-        return False
-
-    if market_cap_won <= 0:
-        ABS_C_MCAP += 1
-        print(f"[ABS-DBG] mcap_invalid_fail  mcap={market_cap_won}")
-        return False
-
-    if market_cap_won < P["MCAP_MIN_WON"]:
-        ABS_C_MCAP += 1
-        print(f"[ABS-DBG] mcap_fail   mcap={market_cap_won:.0f}  min={P['MCAP_MIN_WON']}")
-        return False
+    if market_cap_won is not None:
+        if market_cap_won < P["MCAP_MIN_WON"]:
+            ABS_C_MCAP += 1
+            print(f"[ABS-DBG] mcap_fail   mcap={market_cap_won:.0f}  min={P['MCAP_MIN_WON']}")
+            return False
 
     # (3) 거래량/거래대금: 당일 + 20일 평균 보조 기준
     vol0 = float(df["volume"].iloc[idx]) if len(df) else 0.0
@@ -739,12 +731,7 @@ def main():
         if DEBUG_MCAP and idx <= DEBUG_SAMPLE:
             _dbg_mcap_once(code, info)
 
-        # ✅ 절대 필터 (시총 누락/파싱 실패 시 무조건 컷; LIGHT 완화 로직 포함)
-        if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df, P, MODE_ABS_FINAL):
-            c_abs_fail += 1
-            continue
-
-        # ✅ 기술 조건 — 20MA 상승변곡 필수
+        # ✅ 기술 조건 먼저 (모드별 파라미터 적용)
         ok20 = cond_20ma_inflect_up_required(
             df,
             lookback=TP["INFLECT_LOOKBACK_20"],
@@ -754,7 +741,6 @@ def main():
             c_20_fail += 1
             continue
 
-        # ✅ 3MA 상승전환+안착(+쌍바닥 제약)
         ok3 = cond_3ma_turning_point_capture(
             df,
             window=TP["WIN_3MA"],
@@ -772,6 +758,11 @@ def main():
         )
         if not ok3:
             c_3_fail += 1
+            continue
+
+        # ✅ 절대 필터 (시총 누락→보정, LIGHT는 완화 로직)
+        if USE_ABSOLUTE_FILTER and not pass_absolute_filters(info, df, P, MODE_ABS_FINAL):
+            c_abs_fail += 1
             continue
 
         selected.append((code, name))
