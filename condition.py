@@ -302,6 +302,7 @@ def _parse_market_cap(raw) -> Optional[float]:
             return v if v > 0 else None
         return None
     except Exception:
+        print(f"[MCAP-PARSE-FAIL] raw={repr(raw)}")  # ← 여기에
         return None
 
 # 상장주식수 파서 (만주/억주 포함)
@@ -449,6 +450,18 @@ def pass_absolute_filters(info: Dict[str, Any], df: pd.DataFrame, P: Dict[str, A
         return False
 
     # (2) 시총: 값이 ‘있고 >0’일 때 비교, 없으면 보정 시도
+        # === ✅ 진단 로그 추가 (유라클 None 원인 확인용) ===
+        if info.get("name", "") in ("유라클", "유라클(예시)"):  # 필요한 종목명만
+            raw_candidates = [
+                info.get("market_cap"),
+                info.get("extra", {}).get("market_cap"),
+                info.get("opt10001", {}).get("market_cap"),
+                info.get("opt10001", {}).get("시가총액"),
+                info.get("extra", {}).get("시가총액"),
+                info.get("시가총액"),
+            ]
+            print(f"[MCAP-RAW] {info.get('name', '?')} cand=", [repr(x) for x in raw_candidates])
+        # ============================================
     market_cap_won = get_market_cap(info)
     if market_cap_won is None:
         shares = get_listed_shares(info)
